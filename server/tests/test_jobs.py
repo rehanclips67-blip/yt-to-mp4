@@ -92,6 +92,32 @@ def test_old_persisted_job_restart_without_source_id(tmp_path):
     assert job.spec.url == "https://youtu.be/old"
 
 
+def test_validate_duration_uses_upload_source_id_without_url_lookup(tmp_path):
+    class Repository:
+        def get_source_by_id(self, source_id):
+            assert source_id == "upload-source"
+            return type("Source", (), {"duration_seconds": 10})()
+
+        def get_source(self, original_url):
+            raise AssertionError("upload validation must not look up a missing URL")
+
+    manager = JobManager(
+        lambda spec, out_dir: None,
+        root=tmp_path / "jobs",
+    )
+    manager._repository = Repository()
+    spec = make_clip_spec(
+        url=None,
+        source_id="upload-source",
+        start=0,
+        end=10,
+        quality=Quality(720),
+        mode=Mode.FAST,
+    )
+
+    manager.validate_duration(spec)
+
+
 def test_waiting_jobs_report_their_place_in_line(manager, gate):
     first = manager.submit(SPEC, "a")
     wait_for(first, JobStatus.WORKING)

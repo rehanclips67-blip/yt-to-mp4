@@ -578,11 +578,10 @@ class JobManager:
     def validate_duration(self, spec: ClipSpec) -> None:
         source = None
         if self._repository:
-            source = (
-                self._repository.get_source_by_id(spec.source_id)
-                if spec.source_id is not None
-                else self._repository.get_source(spec.url)
-            )
+            if spec.source_id is not None:
+                source = self._repository.get_source_by_id(spec.source_id)
+            elif spec.url is not None:
+                source = self._repository.get_source(spec.url)
         if source is not None:
             duration = source.duration_seconds
         elif spec.url is not None and self.metadata_fetcher is not None:
