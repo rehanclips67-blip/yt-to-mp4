@@ -49,7 +49,7 @@ function loadYouTubeApi(): Promise<void> {
 }
 
 /** Embeds a YouTube player into `mountRef` and exposes its playhead. */
-export function useYouTubePlayer(videoId: string) {
+export function useYouTubePlayer(videoId: string | null) {
   const mountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YT.Player | undefined>(undefined);
   const [time, setTime] = useState(0);
@@ -60,6 +60,7 @@ export function useYouTubePlayer(videoId: string) {
   useEffect(() => {
     const mount = mountRef.current;
     let cancelled = false;
+    if (!videoId) return () => undefined;
 
     loadYouTubeApi().then(() => {
       if (cancelled || !mount) return;

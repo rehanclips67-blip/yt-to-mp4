@@ -100,6 +100,31 @@
   font: 400 17px/26px var(--sans);
 }
 
+.inputModes {
+  display: flex;
+  gap: 4px;
+  margin-top: 28px;
+}
+
+.inputMode,
+.inputModeActive {
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 13px var(--sans);
+  cursor: pointer;
+}
+
+.inputModeActive {
+  border-color: var(--hairline);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.inputMode:hover { color: var(--ink); }
+
 .desktopBreak {
   display: inline;
 }
@@ -141,6 +166,11 @@
 .form input::placeholder {
   color: var(--text-tertiary);
   opacity: 1;
+}
+
+.form input[type="file"] {
+  padding: 15px 12px 0 44px;
+  font-size: 13px;
 }
 
 .form input:focus,

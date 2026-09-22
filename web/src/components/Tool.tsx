@@ -1,18 +1,19 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { fetchInfo, type VideoInfo } from "@/lib/api";
+import { completeSource, fetchInfo, presignSource, type SourceInfo, type VideoInfo, uploadSource } from "@/lib/api";
 import { Workspace } from "./Workspace";
 import styles from "./Tool.module.css";
 
 type State =
   | { status: "idle" | "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; url: string; info: VideoInfo };
+  | { status: "ready"; url: string; info: VideoInfo; sourceId?: string };
 
 export function Tool() {
   const [state, setState] = useState<State>({ status: "idle" });
   const [validationHint, setValidationHint] = useState("");
+  const [inputMode, setInputMode] = useState<"youtube" | "upload">("youtube");
   const inputRef = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
 
@@ -33,6 +34,24 @@ export function Tool() {
 
   const load = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const file = (event.currentTarget.elements.namedItem("video-file") as HTMLInputElement | null)?.files?.[0];
+    if (inputMode === "upload") {
+      if (!file) {
+        setValidationHint("Choose a video file to upload.");
+        return;
+      }
+      setValidationHint("");
+      setState({ status: "loading" });
+      try {
+        const presign = await presignSource(file.name, file.type || "application/octet-stream");
+        await uploadSource(presign, file);
+        const source = await completeSource(presign.id);
+        setState({ status: "ready", url: "", sourceId: source.id, info: sourceToVideoInfo(source) });
+      } catch (error) {
+        setState({ status: "error", message: error instanceof Error ? error.message : "Upload failed." });
+      }
+      return;
+    }
     const url = String(new FormData(event.currentTarget).get("video-url")).trim();
     const validationMessage = validateUrl(url);
 
@@ -61,7 +80,7 @@ export function Tool() {
 
       <main className={styles.main}>
         {state.status === "ready" ? (
-          <Workspace key={state.info.id} info={state.info} url={state.url} />
+          <Workspace key={state.info.id} info={state.info} url={state.url} sourceId={state.sourceId} />
         ) : (
           <section className={styles.landingHero} aria-label="Load a video">
             <div className={styles.heroContent}>
@@ -74,8 +93,12 @@ export function Tool() {
                 <p className={styles.description}>Paste a YouTube link, choose your moment,<br className={styles.desktopBreak} /> and download the clip.</p>
               </div>
 
+              <div className={styles.inputModes} role="tablist" aria-label="Video source">
+                <button type="button" className={inputMode === "youtube" ? styles.inputModeActive : styles.inputMode} onClick={() => setInputMode("youtube")}>YouTube link</button>
+                <button type="button" className={inputMode === "upload" ? styles.inputModeActive : styles.inputMode} onClick={() => setInputMode("upload")}>Upload video</button>
+              </div>
               <form className={styles.form} onSubmit={load} noValidate>
-                <label className={styles.srOnly} htmlFor="youtube-url">YouTube URL</label>
+                <label className={styles.srOnly} htmlFor={inputMode === "youtube" ? "youtube-url" : "video-file"}>{inputMode === "youtube" ? "YouTube URL" : "Video file"}</label>
                 <span className={styles.inputIcon} aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none">
                     <path d="M9.5 14.5 14.5 9.5M7.25 17.75l-1 1a3.18 3.18 0 0 1-4.5-4.5l3.5-3.5a3.18 3.18 0 0 1 4.5 0" />
@@ -84,23 +107,21 @@ export function Tool() {
                 </span>
                 <input
                   ref={inputRef}
-                  id="youtube-url"
-                  name="video-url"
-                  type="url"
-                  inputMode="url"
+                  id={inputMode === "youtube" ? "youtube-url" : "video-file"}
+                  name={inputMode === "youtube" ? "video-url" : "video-file"}
+                  type={inputMode === "youtube" ? "url" : "file"}
+                  accept={inputMode === "upload" ? "video/*" : undefined}
+                  inputMode={inputMode === "youtube" ? "url" : undefined}
                   autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
                   required
                   autoFocus
-                  placeholder="Paste YouTube link…"
-                  aria-label="YouTube link"
+                  placeholder={inputMode === "youtube" ? "Paste YouTube link…" : undefined}
+                  aria-label={inputMode === "youtube" ? "YouTube link" : "Video file"}
                   onChange={() => setValidationHint("")}
                   onFocus={() => setValidationHint("")}
                 />
-                <button type="submit" className={styles.submit} aria-label={loading ? "Loading video" : "Clip it"}>
-                  <span className={styles.submitLabel}>{loading ? "Loading…" : "Clip it"}</span>
+                <button type="submit" className={styles.submit} aria-label={loading ? "Loading video" : inputMode === "upload" ? "Upload video" : "Clip it"}>
+                  <span className={styles.submitLabel}>{loading ? "Loading…" : inputMode === "upload" ? "Upload" : "Clip it"}</span>
                   <span className={styles.submitArrow} aria-hidden="true">{loading ? "…" : "→"}</span>
                 </button>
               </form>
@@ -136,6 +157,28 @@ export function Tool() {
       </footer>
     </div>
   );
+}
+
+function sourceToVideoInfo(source: SourceInfo): VideoInfo {
+  const res = source.height && source.height >= 1080 ? 1080 : 720;
+  return {
+    id: source.id,
+    title: source.title,
+    duration: source.duration_seconds,
+    thumbnail: null,
+    qualities: [{
+      res,
+      label: `${res}p`,
+      kbps: 5000,
+      max_seconds: 3600,
+      fps: source.fps,
+      codec: source.codec,
+      container: null,
+      has_audio: true,
+      audio_available: true,
+      format_id: null,
+    }],
+  };
 }
 
 function ClippingPreview() {

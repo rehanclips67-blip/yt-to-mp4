@@ -37,10 +37,12 @@ const MODES: { id: Mode; name: string; note: string }[] = [
 interface Props {
   info: VideoInfo;
   url: string;
+  sourceId?: string;
 }
 
-export function Workspace({ info, url }: Props) {
-  const { mountRef, time, playing, muted, started, seekTo, play, pause, toggleMute } = useYouTubePlayer(info.id);
+export function Workspace({ info, url, sourceId }: Props) {
+  const isUpload = Boolean(sourceId);
+  const { mountRef, time, playing, muted, started, seekTo, play, pause, toggleMute } = useYouTubePlayer(isUpload ? null : info.id);
   const [quality, setQuality] = useState(info.qualities[0]);
   const [range, setRange] = useState<Range>({
     start: 0,
@@ -68,6 +70,12 @@ export function Workspace({ info, url }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    if (!url) {
+      setTranscript({ available: false, reason: "unavailable", segments: [] });
+      return () => {
+        cancelled = true;
+      };
+    }
     fetchTranscript(url)
       .then((result) => {
         if (!cancelled) setTranscript(result);
@@ -105,7 +113,7 @@ export function Workspace({ info, url }: Props) {
   const busy = ["starting", "queued", "working"].includes(view.stage);
 
   const download = () =>
-    startJob({ url, ...range, res: quality.res, mode });
+    startJob({ ...(sourceId ? { source_id: sourceId } : { url }), ...range, res: quality.res, mode });
   const matches = useMemo(() => {
     const query = transcriptQuery.trim().toLowerCase();
     if (!transcript?.available || !query) return [];
@@ -160,7 +168,7 @@ export function Workspace({ info, url }: Props) {
   const exportSelected = () => {
     if (selectedRanges.length === 0) return;
     startExport({
-      url,
+      ...(sourceId ? { source_id: sourceId } : { url }),
       res: quality.res,
       mode,
       ranges: selectedRanges.map(({ start, end }) => ({ start, end })),
@@ -168,6 +176,7 @@ export function Workspace({ info, url }: Props) {
   };
 
   const sourceLabel = (() => {
+    if (isUpload) return "Uploaded video";
     try {
       const parsed = new URL(url);
       return parsed.hostname === "youtu.be"
@@ -199,14 +208,15 @@ export function Workspace({ info, url }: Props) {
           <p className={styles.sourceMeta}>
             <span className={styles.numeric}>{formatClock(info.duration)}</span>
             <span aria-hidden="true">·</span>
-            <a className={styles.sourceUrl} href={url} target="_blank" rel="noopener noreferrer">{sourceLabel}</a>
+            {isUpload ? <span className={styles.sourceUrl}>{sourceLabel}</span> : <a className={styles.sourceUrl} href={url} target="_blank" rel="noopener noreferrer">{sourceLabel}</a>}
           </p>
         </div>
         <div className={styles.playerBlock}>
           <div className={styles.stage}>
             <div className={styles.player}>
               <div ref={mountRef} className={styles.playerMount} />
-              {posterVisible && (
+              {isUpload && <div className={styles.uploadPreview}>Uploaded video ready to clip</div>}
+              {!isUpload && posterVisible && (
                 <button
                   type="button"
                   className={styles.poster}
@@ -220,7 +230,7 @@ export function Workspace({ info, url }: Props) {
                   <span className={styles.posterPlay} aria-hidden="true"><span /></span>
                 </button>
               )}
-              <div className={styles.playerControls}>
+              {!isUpload && <div className={styles.playerControls}>
               <button type="button" className={styles.iconButton} onClick={playing ? pause : play} aria-label={playing ? "Pause video" : "Play video"}>
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   {playing ? <><path d="M8 5v14M16 5v14" /></> : <path d="m9 5 10 7-10 7V5Z" />}
@@ -246,7 +256,7 @@ export function Workspace({ info, url }: Props) {
               <button type="button" className={styles.iconButton} onClick={() => mountRef.current?.requestFullscreen?.()} aria-label="Enter fullscreen">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M8 20H4v-4M20 16v4h-4" /></svg>
               </button>
-              </div>
+              </div>}
             </div>
           </div>
         </div>

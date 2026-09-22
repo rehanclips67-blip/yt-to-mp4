@@ -46,7 +46,8 @@ export interface ClipRange {
 }
 
 export interface ExportRequest {
-  url: string;
+  url?: string;
+  source_id?: string;
   res: number;
   mode: Mode;
   ranges: Array<{ start: number; end: number }>;
@@ -61,7 +62,8 @@ export interface VideoInfo {
 }
 
 export interface ClipRequest {
-  url: string;
+  url?: string;
+  source_id?: string;
   start: number;
   end: number;
   res: number;
@@ -82,7 +84,55 @@ export interface Job {
   expires_in: number | null;
 }
 
+export interface SourcePresign {
+  id: string;
+  status: string;
+  upload_url: string | null;
+  upload_fields: Record<string, string> | null;
+  expires_in: number;
+}
+
+export interface SourceInfo {
+  id: string;
+  source_type: "upload";
+  title: string;
+  duration_seconds: number;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  codec: string | null;
+  status: string;
+  expires_in: number;
+}
+
 export const fetchInfo = (url: string): Promise<VideoInfo> => send("POST", "/api/info", { url });
+export const presignSource = (filename: string, contentType: string): Promise<SourcePresign> =>
+  send("POST", "/api/sources/presign", { filename, content_type: contentType });
+export async function uploadSource(
+  presign: SourcePresign,
+  file: File,
+): Promise<void> {
+  const body = presign.upload_fields
+    ? (() => {
+        const form = new FormData();
+        Object.entries(presign.upload_fields).forEach(([key, value]) => form.append(key, value));
+        form.append("file", file);
+        return form;
+      })()
+    : file;
+  if (!presign.upload_url) throw new Error("The upload destination was not provided.");
+  const uploadUrl = /^https?:\/\//.test(presign.upload_url)
+    ? presign.upload_url
+    : `${API_URL}${presign.upload_url}`;
+  const response = await fetch(uploadUrl, {
+    method: presign.upload_fields ? "POST" : "PUT",
+    headers: presign.upload_fields ? undefined : { "Content-Type": file.type },
+    body,
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+}
+export const completeSource = (id: string): Promise<SourceInfo> =>
+  send("POST", `/api/sources/${id}/complete`);
 export async function fetchTranscript(url: string, fallback = false): Promise<TranscriptResponse> {
   if (!fallback) return send("POST", "/api/transcript", { url });
 
