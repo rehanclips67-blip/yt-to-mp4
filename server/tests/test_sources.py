@@ -1,11 +1,14 @@
 import subprocess
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main
 from app.db import create_db_and_tables, make_engine
+from app.formats import Quality
+from app.media import Mode, download_clip, make_clip_spec
 from app.repository import JobRepository
 
 
@@ -158,3 +161,60 @@ def test_source_complete_cleans_file_and_marks_failed_on_unexpected_probe_error(
     source = repository.get_source_by_id(source_id)
     assert source is not None
     assert source.status == "failed"
+
+
+def test_upload_clip_uses_source_lookup_and_local_storage(tmp_path, monkeypatch):
+    source_path = tmp_path / "uploaded.mp4"
+    source_path.write_bytes(b"source")
+    repository = JobRepository(make_engine(f"sqlite:///{tmp_path / 'sources.db'}"))
+    create_db_and_tables(repository.engine)
+    repository.add_source(
+        main.Source(
+            id="upload-1",
+            source_type=main.SourceType.upload,
+            storage_key=str(source_path),
+            title="Uploaded title",
+            duration_seconds=20,
+            status="ready",
+            created_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+    )
+
+    def fake_ffmpeg(args, timeout):
+        Path(args[-1]).write_bytes(b"clip")
+
+    monkeypatch.setattr("app.media._run_ffmpeg", fake_ffmpeg)
+    spec = make_clip_spec(
+        url=None,
+        source_id="upload-1",
+        start=1,
+        end=3,
+        quality=Quality(720),
+        mode=Mode.FAST,
+    )
+    clip = download_clip(spec, tmp_path / "out", repository.get_source_by_id, None)
+
+    assert clip.title == "Uploaded title"
+    assert clip.path.read_bytes() == b"clip"
+
+
+def test_make_clip_spec_requires_exactly_one_source():
+    with pytest.raises(ValueError, match="Exactly one"):
+        make_clip_spec(
+            url=None,
+            source_id=None,
+            start=0,
+            end=1,
+            quality=Quality(720),
+            mode=Mode.FAST,
+        )
+    with pytest.raises(ValueError, match="Exactly one"):
+        make_clip_spec(
+            url="https://youtu.be/x",
+            source_id="upload-1",
+            start=0,
+            end=1,
+            quality=Quality(720),
+            mode=Mode.FAST,
+        )

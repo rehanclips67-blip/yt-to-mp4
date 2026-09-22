@@ -5,10 +5,17 @@ import pytest
 
 from app.formats import Quality
 from app.jobs import JobManager, JobStatus
-from app.media import Clip, ClipSpec, Mode
+from app.media import Clip, Mode, make_clip_spec
 from app.resources import ResourceAdmissionError, ResourceGuard
 
-SPEC = ClipSpec("https://youtu.be/x", 0, 10, Quality(1080), Mode.FAST)
+SPEC = make_clip_spec(
+    url="https://youtu.be/x",
+    source_id=None,
+    start=0,
+    end=10,
+    quality=Quality(1080),
+    mode=Mode.FAST,
+)
 Usage = namedtuple("Usage", "total used free")
 
 

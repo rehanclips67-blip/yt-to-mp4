@@ -35,11 +35,26 @@ class Mode(StrEnum):
 
 
 class ClipSpec(NamedTuple):
-    url: str
+    url: str | None
     start: float
     end: float
     quality: Quality
     mode: Mode
+    source_id: str | None = None
+
+
+def make_clip_spec(
+    *,
+    url: str | None,
+    source_id: str | None,
+    start: float,
+    end: float,
+    quality: Quality,
+    mode: Mode,
+) -> ClipSpec:
+    if (url is None) == (source_id is None):
+        raise ValueError("Exactly one of url or source_id is required.")
+    return ClipSpec(url, start, end, quality, mode, source_id)
 
 
 class Clip(NamedTuple):
@@ -418,10 +433,89 @@ def _run_ffmpeg(args: list[str], timeout: float) -> None:
     subprocess.run(args, check=True, capture_output=True, timeout=timeout, shell=False)
 
 
-def download_clip(spec: ClipSpec, out_dir: Path) -> Clip:
+def _resolve_source_file(
+    spec: ClipSpec,
+    out_dir: Path,
+    source_lookup: Callable[[str], Source | None] | None,
+    storage,
+) -> tuple[Path, Path | None, Source]:
+    if spec.source_id is None or source_lookup is None:
+        raise ValueError("An upload source resolver is required.")
+    source = source_lookup(spec.source_id)
+    if (
+        source is None
+        or source.source_type is not SourceType.upload
+        or source.status != "ready"
+        or source.expires_at <= datetime.now(UTC)
+    ):
+        raise ValueError("The upload source is unavailable or expired.")
+    if storage is None:
+        path = Path(source.storage_key)
+        if not path.is_file():
+            raise ValueError("The upload source file is unavailable.")
+        return path, None, source
+    suffix = Path(source.storage_key).suffix or ".mp4"
+    temporary = out_dir / f"source-input{suffix}"
+    storage.download(source.storage_key, temporary)
+    return temporary, temporary, source
+
+
+def _cut_ranges(
+    specs: tuple[ClipSpec, ...],
+    source: Path,
+    out_dir: Path,
+    deadline: float,
+    budget: float,
+    title: str,
+) -> list[Clip]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outputs: list[Clip] = []
+    for index, spec in enumerate(specs):
+        target = out_dir / f"clip-{index}.mp4"
+        args = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            str(spec.start),
+            "-i",
+            str(source),
+            "-t",
+            str(spec.end - spec.start),
+        ]
+        if spec.mode is Mode.FAST:
+            args += ["-c", "copy"]
+        else:
+            args += [*_EXACT_ENCODE_ARGS]
+        args += [str(target)]
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            _run_ffmpeg(args, remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise MediaTimeoutError(
+                f"Media operation exceeded its {budget:g}-second timeout"
+            ) from exc
+        outputs.append(Clip(target, title))
+    return outputs
+
+
+def download_clip(
+    spec: ClipSpec,
+    out_dir: Path,
+    source_lookup: Callable[[str], Source | None] | None = None,
+    storage=None,
+) -> Clip:
     """Download only the requested range, in the requested quality, as one MP4."""
     budget = media_timeout_seconds(spec.end - spec.start)
     deadline = time.monotonic() + budget
+    if spec.source_id is not None:
+        source_path, temporary, source = _resolve_source_file(spec, out_dir, source_lookup, storage)
+        try:
+            return _cut_ranges((spec,), source_path, out_dir, deadline, budget, source.title)[0]
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
     timeout_hook = _timeout_hook(deadline, budget)
     opts = {
         **_BASE_OPTS,
@@ -454,17 +548,33 @@ def download_clip(spec: ClipSpec, out_dir: Path) -> Clip:
     return Clip(path, info["title"])
 
 
-def download_export(specs: tuple[ClipSpec, ...], out_dir: Path) -> list[Clip]:
+def download_export(
+    specs: tuple[ClipSpec, ...],
+    out_dir: Path,
+    source_lookup: Callable[[str], Source | None] | None = None,
+    storage=None,
+) -> list[Clip]:
     """Download one source and cut all ranges from it.
 
     Multi-range exports deliberately share the source download.  Fast cuts use
     stream copy; exact cuts are encoded with the same bounded settings as clips.
     """
     first = specs[0]
+    if first.source_id is not None and any(spec.source_id != first.source_id for spec in specs):
+        raise ValueError("All export ranges must use the same source.")
     source_dir = out_dir / "source"
     source_dir.mkdir(parents=True, exist_ok=True)
     budget = media_timeout_seconds(sum(spec.end - spec.start for spec in specs))
     deadline = time.monotonic() + budget
+    if first.source_id is not None:
+        source_path, temporary, source = _resolve_source_file(
+            first, source_dir, source_lookup, storage
+        )
+        try:
+            return _cut_ranges(specs, source_path, out_dir, deadline, budget, source.title)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
     timeout_hook = _timeout_hook(deadline, budget)
     opts = {
         **_BASE_OPTS,
@@ -488,32 +598,4 @@ def download_export(specs: tuple[ClipSpec, ...], out_dir: Path) -> list[Clip]:
             if candidate.exists():
                 source = candidate
     _create_source(info, source, first.url)
-    outputs: list[Clip] = []
-    for index, spec in enumerate(specs):
-        target = out_dir / f"clip-{index}.mp4"
-        args = [
-            "ffmpeg",
-            "-y",
-            "-v",
-            "error",
-            "-ss",
-            str(spec.start),
-            "-i",
-            str(source),
-            "-t",
-            str(spec.end - spec.start),
-        ]
-        if spec.mode is Mode.FAST:
-            args += ["-c", "copy"]
-        else:
-            args += [*_EXACT_ENCODE_ARGS]
-        args += [str(target)]
-        remaining = max(0.1, deadline - time.monotonic())
-        try:
-            _run_ffmpeg(args, remaining)
-        except subprocess.TimeoutExpired as exc:
-            raise MediaTimeoutError(
-                f"Media operation exceeded its {budget:g}-second timeout"
-            ) from exc
-        outputs.append(Clip(target, info["title"]))
-    return outputs
+    return _cut_ranges(specs, source, out_dir, deadline, budget, info["title"])

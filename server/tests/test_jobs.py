@@ -1,13 +1,24 @@
+import json
 import threading
 import time
 
 import pytest
 
+from app.db import create_db_and_tables, make_engine
 from app.formats import Quality
 from app.jobs import JobManager, JobStatus, QueueFull, TooManyJobs
-from app.media import Clip, ClipSpec, Mode
+from app.media import Clip, Mode, make_clip_spec
+from app.models import JobRecord
+from app.repository import JobRepository
 
-SPEC = ClipSpec("https://youtu.be/x", 10, 40, Quality(1080), Mode.EXACT)
+SPEC = make_clip_spec(
+    url="https://youtu.be/x",
+    source_id=None,
+    start=10,
+    end=40,
+    quality=Quality(1080),
+    mode=Mode.EXACT,
+)
 
 
 def wait_for(job, status, timeout=3):
@@ -41,6 +52,44 @@ def test_job_runs_to_completion(manager, gate):
     assert job.clip.path.read_bytes() == b"data"
     assert job.filename == "Title (10s-40s).mp4"
     assert 0 < manager.expires_in(job) <= 60
+
+
+def test_old_persisted_job_restart_without_source_id(tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'jobs.db'}"
+    repository = JobRepository(make_engine(db_url))
+    create_db_and_tables(repository.engine)
+    work_dir = tmp_path / "restored"
+    repository.add(
+        JobRecord(
+            id="old-job",
+            kind="clip",
+            spec_json=json.dumps(
+                {
+                    "url": "https://youtu.be/old",
+                    "start": 1,
+                    "end": 2,
+                    "res": 720,
+                    "mode": "fast",
+                }
+            ),
+            client="test",
+            work_dir=str(work_dir),
+            status="queued",
+        )
+    )
+
+    def runner(spec, out_dir):
+        path = out_dir / "clip.mp4"
+        path.write_bytes(b"clip")
+        return Clip(path, "old")
+
+    manager = JobManager(runner, workers=1, root=tmp_path / "jobs", db_url=db_url)
+    job = manager.get("old-job")
+
+    assert job is not None
+    wait_for(job, JobStatus.DONE)
+    assert job.spec.source_id is None
+    assert job.spec.url == "https://youtu.be/old"
 
 
 def test_waiting_jobs_report_their_place_in_line(manager, gate):

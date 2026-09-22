@@ -31,7 +31,6 @@ from .jobs import (
 )
 from .limits import max_clip_seconds
 from .media import (
-    ClipSpec,
     Mode,
     PrimaryUrlError,
     download_clip,
@@ -39,6 +38,7 @@ from .media import (
     fetch_info,
     fetch_transcript,
     fetch_whisper_transcript,
+    make_clip_spec,
     validate_primary_url,
     whisper_is_configured,
 )
@@ -117,6 +117,7 @@ jobs = JobManager(
     cleanup_grace=int(os.getenv("CLEANUP_GRACE_SECONDS", "300")),
     metadata_fetcher=fetch_info,
     storage=configured_storage,
+    source_lookup=None,
     resources=resource_guard,
 )
 export_jobs = ExportJobManager(
@@ -128,6 +129,7 @@ export_jobs = ExportJobManager(
     queue_adapter=os.getenv("QUEUE_BACKEND", os.getenv("QUEUE_ADAPTER", "thread")),
     cleanup_grace=int(os.getenv("CLEANUP_GRACE_SECONDS", "300")),
     storage=configured_storage,
+    source_lookup=None,
     resources=resource_guard,
 )
 transcript_jobs = TranscriptJobManager(
@@ -138,6 +140,8 @@ transcript_jobs = TranscriptJobManager(
 )
 submission_limiter = make_rate_limiter()
 source_repository = jobs._repository
+jobs.source_lookup = source_repository.get_source_by_id if source_repository else None
+export_jobs.source_lookup = source_repository.get_source_by_id if source_repository else None
 
 
 def _cleanup_expired_sources() -> None:
@@ -196,6 +200,20 @@ def _source_view(source: Source) -> SourceOut:
         status=source.status,
         expires_in=max(0, int((source.expires_at - utcnow()).total_seconds())),
     )
+
+
+def _require_ready_upload(source_id: str) -> Source:
+    if source_repository is None:
+        raise HTTPException(503, "Source storage is unavailable.")
+    source = source_repository.get_source_by_id(source_id)
+    if (
+        source is None
+        or source.source_type is not SourceType.upload
+        or source.status != "ready"
+        or source.expires_at <= utcnow()
+    ):
+        raise HTTPException(422, "The upload source is unavailable or expired.")
+    return source
 
 
 def _probe_source(path: Path) -> dict:
@@ -456,11 +474,21 @@ def transcript(req: TranscriptRequest, request: Request, response: Response):
 @app.post("/api/jobs", status_code=202)
 def create_job(req: ClipRequest, request: Request) -> JobOut:
     mode = req.mode if "mode" in req.model_fields_set else Mode.FAST
-    spec = ClipSpec(req.url, req.start, req.end, Quality(req.res), mode)
+    spec = make_clip_spec(
+        url=req.url,
+        source_id=req.source_id,
+        start=req.start,
+        end=req.end,
+        quality=Quality(req.res),
+        mode=mode,
+    )
     client = client_identity(request)
     _enforce_submission_limit(client)
     try:
-        validate_primary_url(req.url)
+        if req.source_id is not None:
+            _require_ready_upload(req.source_id)
+        else:
+            validate_primary_url(req.url)
         jobs.validate_duration(spec)
     except YoutubeDLError as e:
         raise HTTPException(422, "Couldn't read the source duration.") from e
@@ -505,14 +533,31 @@ def get_transcript_result(job_id: str) -> TranscriptResponse:
 def create_export(req: ExportRequest, request: Request) -> ExportJobOut:
     mode = req.mode if "mode" in req.model_fields_set else Mode.FAST
     specs = tuple(
-        ClipSpec(req.url, item.start, item.end, Quality(req.res), mode) for item in req.ranges
+        make_clip_spec(
+            url=req.url,
+            source_id=req.source_id,
+            start=item.start,
+            end=item.end,
+            quality=Quality(req.res),
+            mode=mode,
+        )
+        for item in req.ranges
     )
     client = client_identity(request)
     _enforce_submission_limit(client)
     try:
-        validate_primary_url(req.url)
+        if req.source_id is not None:
+            _require_ready_upload(req.source_id)
+            if any(spec.source_id != req.source_id for spec in specs):
+                raise ValueError("All export ranges must use the same source.")
+            for spec in specs:
+                jobs.validate_duration(spec)
+        else:
+            validate_primary_url(req.url)
         job = export_jobs.submit(specs, client)
     except PrimaryUrlError as e:
+        raise HTTPException(422, str(e)) from e
+    except ValueError as e:
         raise HTTPException(422, str(e)) from e
     except TooManyJobs as e:
         raise HTTPException(429, "You already have exports in progress.") from e

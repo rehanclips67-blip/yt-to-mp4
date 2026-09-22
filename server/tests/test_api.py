@@ -1,13 +1,17 @@
 import time
+from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.db import create_db_and_tables, make_engine
 from app.jobs import JobManager, TranscriptJobManager
 from app.media import Clip, PrimaryUrlError
+from app.models import Source, SourceType
 from app.rate_limit import RateLimitDecision
+from app.repository import JobRepository
 
 URL = "https://www.youtube.com/watch?v=abc"
 CLIP = {"url": URL, "start": 5, "end": 12.5, "res": 1080}
@@ -229,6 +233,43 @@ def test_job_end_beyond_source_duration_is_rejected(client, monkeypatch, tmp_pat
         ),
     )
     response = client.post("/api/jobs", json={**CLIP, "end": 11})
+    assert response.status_code == 422
+    assert "exceeds the source duration" in response.json()["detail"]
+
+
+def test_upload_job_end_beyond_source_duration_is_rejected(client, monkeypatch, tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'sources.db'}"
+    repository = JobRepository(make_engine(db_url))
+    create_db_and_tables(repository.engine)
+    now = datetime.now(UTC)
+    repository.add_source(
+        Source(
+            id="upload-source",
+            source_type=SourceType.upload,
+            storage_key=str(tmp_path / "upload.mp4"),
+            title="Uploaded source",
+            duration_seconds=10,
+            status="ready",
+            created_at=now,
+            expires_at=now + timedelta(minutes=5),
+        )
+    )
+    monkeypatch.setattr(main, "source_repository", repository)
+    monkeypatch.setattr(
+        main,
+        "jobs",
+        JobManager(
+            lambda spec, out_dir: time.sleep(1),
+            root=tmp_path / "jobs",
+            db_url=db_url,
+        ),
+    )
+
+    response = client.post(
+        "/api/jobs",
+        json={"source_id": "upload-source", "start": 0, "end": 11, "res": 720},
+    )
+
     assert response.status_code == 422
     assert "exceeds the source duration" in response.json()["detail"]
 

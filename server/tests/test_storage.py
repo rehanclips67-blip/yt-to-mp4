@@ -3,10 +3,17 @@ from datetime import UTC, datetime, timedelta
 
 from app.formats import Quality
 from app.jobs import ExportJobManager, JobManager, JobStatus
-from app.media import Clip, ClipSpec, Mode
+from app.media import Clip, Mode, make_clip_spec
 from app.storage import ObjectStorage, StoredObject
 
-SPEC = ClipSpec("https://youtu.be/x", 1, 3, Quality(720), Mode.FAST)
+SPEC = make_clip_spec(
+    url="https://youtu.be/x",
+    source_id=None,
+    start=1,
+    end=3,
+    quality=Quality(720),
+    mode=Mode.FAST,
+)
 
 
 class FakeS3:

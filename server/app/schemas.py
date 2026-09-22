@@ -37,7 +37,9 @@ class TranscriptRequest(InfoRequest):
     fallback_whisper: bool = False
 
 
-class ClipRequest(InfoRequest):
+class ClipRequest(BaseModel):
+    url: str | None = None
+    source_id: str | None = Field(default=None, min_length=1)
     start: float = Field(ge=0)
     end: float
     res: int = Field(gt=0)
@@ -45,6 +47,10 @@ class ClipRequest(InfoRequest):
 
     @model_validator(mode="after")
     def _check_range(self) -> Self:
+        if (self.url is None) == (self.source_id is None):
+            raise ValueError("Exactly one of url or source_id is required.")
+        if self.url is not None:
+            _require_youtube(self.url)
         if not math.isfinite(self.start) or not math.isfinite(self.end):
             raise ValueError("Range values must be finite")
         limit = max_clip_seconds(self.res)
@@ -69,13 +75,19 @@ class RangeRequest(BaseModel):
         return self
 
 
-class ExportRequest(InfoRequest):
+class ExportRequest(BaseModel):
+    url: str | None = None
+    source_id: str | None = Field(default=None, min_length=1)
     ranges: list[RangeRequest] = Field(min_length=1, max_length=20)
     res: int = Field(gt=0)
     mode: Mode = Mode.EXACT
 
     @model_validator(mode="after")
     def _check_ranges(self) -> Self:
+        if (self.url is None) == (self.source_id is None):
+            raise ValueError("Exactly one of url or source_id is required.")
+        if self.url is not None:
+            _require_youtube(self.url)
         limit = max_clip_seconds(self.res)
         if any(item.end - item.start > limit for item in self.ranges):
             raise ValueError(

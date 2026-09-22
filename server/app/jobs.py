@@ -21,7 +21,7 @@ from yt_dlp.utils import YoutubeDLError
 
 from .db import create_db_and_tables, make_engine
 from .formats import Quality
-from .media import Clip, ClipSpec, Mode, source_context
+from .media import Clip, ClipSpec, Mode, make_clip_spec, source_context
 from .models import JobRecord
 from .queue import make_queue
 from .repository import JobRepository
@@ -127,6 +127,7 @@ class ExportJobManager:
     cleanup_grace: int = 0
     storage: ObjectStorage | None = None
     resources: ResourceGuard | None = None
+    source_lookup: Callable[[str], object | None] | None = None
     estimated_bytes: int = field(
         default_factory=lambda: int(os.getenv("EXPORT_TEMP_RESERVATION_BYTES", str(2 * 1024**3)))
     )
@@ -142,11 +143,18 @@ class ExportJobManager:
         self._jobs: dict[str, ExportJob] = {}
         self._cancelled: set[str] = set()
         self._lock = threading.Lock()
+        self._runner_supports_sources = "source_lookup" in inspect.signature(self.runner).parameters
+        self._export_runner_supports_sources = (
+            self.export_runner is not None
+            and "source_lookup" in inspect.signature(self.export_runner).parameters
+        )
         self._repository = None
         if self.db_url:
             self._engine = make_engine(self.db_url)
             create_db_and_tables(self._engine)
             self._repository = JobRepository(self._engine)
+            if self.source_lookup is None:
+                self.source_lookup = self._repository.get_source_by_id
 
     def submit(self, specs: tuple[ClipSpec, ...], client: str) -> ExportJob:
         with self._lock:
@@ -267,7 +275,15 @@ class ExportJobManager:
             elif self.export_runner is not None:
                 if self._repository:
                     with source_context(self._repository.add_source, self.ttl):
-                        clips = self.export_runner(job.specs, job.work_dir)
+                        if self.source_lookup is not None and self._export_runner_supports_sources:
+                            clips = self.export_runner(
+                                job.specs,
+                                job.work_dir,
+                                source_lookup=self.source_lookup,
+                                storage=self.storage,
+                            )
+                        else:
+                            clips = self.export_runner(job.specs, job.work_dir)
                 else:
                     clips = self.export_runner(job.specs, job.work_dir)
             else:
@@ -277,7 +293,17 @@ class ExportJobManager:
                     part_dir.mkdir()
                     if self._repository:
                         with source_context(self._repository.add_source, self.ttl):
-                            clips.append(self.runner(spec, part_dir))
+                            if self.source_lookup is not None and self._runner_supports_sources:
+                                clips.append(
+                                    self.runner(
+                                        spec,
+                                        part_dir,
+                                        source_lookup=self.source_lookup,
+                                        storage=self.storage,
+                                    )
+                                )
+                            else:
+                                clips.append(self.runner(spec, part_dir))
                     else:
                         clips.append(self.runner(spec, part_dir))
                     if job.id in self._cancelled:
@@ -285,7 +311,13 @@ class ExportJobManager:
                         break
                     job.phase, job.percent = "cutting", 10 + int(70 * (index + 1) / len(job.specs))
             if "outcome" not in locals():
-                source = self._repository.get_source(job.specs[0].url) if self._repository else None
+                source = (
+                    self._repository.get_source_by_id(job.specs[0].source_id)
+                    if self._repository and job.specs[0].source_id is not None
+                    else self._repository.get_source(job.specs[0].url)
+                    if self._repository
+                    else None
+                )
                 title = source.title if source is not None else clips[0].title
                 job.title = safe_title(title)
                 job.phase, job.percent = "packaging", 90
@@ -443,6 +475,7 @@ class JobManager:
     metadata_fetcher: Callable[[str], dict] | None = None
     storage: ObjectStorage | None = None
     resources: ResourceGuard | None = None
+    source_lookup: Callable[[str], object | None] | None = None
     estimated_bytes: int = field(
         default_factory=lambda: int(os.getenv("CLIP_TEMP_RESERVATION_BYTES", str(512 * 1024**2)))
     )
@@ -460,17 +493,21 @@ class JobManager:
         self._cancelled: set[str] = set()
         self._speed: dict[tuple[int, Mode], float] = {}  # seconds of video cut per second of work
         self._lock = threading.Lock()
+        self._runner_supports_sources = "source_lookup" in inspect.signature(self.runner).parameters
         self._repository = None
         if self.db_url:
             self._engine = make_engine(self.db_url)
             create_db_and_tables(self._engine)
             self._repository = JobRepository(self._engine)
+            if self.source_lookup is None:
+                self.source_lookup = self._repository.get_source_by_id
             self._restore()
 
     def _spec_json(self, spec: ClipSpec) -> str:
         return json.dumps(
             {
                 "url": spec.url,
+                "source_id": spec.source_id,
                 "start": spec.start,
                 "end": spec.end,
                 "res": spec.quality.res,
@@ -484,12 +521,13 @@ class JobManager:
                 record.status = JobStatus.QUEUED
                 self._repository.update(record.id, status=JobStatus.QUEUED, started_at=None)
                 spec_data = json.loads(record.spec_json)
-                spec = ClipSpec(
-                    spec_data["url"],
-                    spec_data["start"],
-                    spec_data["end"],
-                    Quality(spec_data["res"]),
-                    Mode(spec_data["mode"]),
+                spec = make_clip_spec(
+                    url=spec_data.get("url"),
+                    source_id=spec_data.get("source_id"),
+                    start=spec_data["start"],
+                    end=spec_data["end"],
+                    quality=Quality(spec_data["res"]),
+                    mode=Mode(spec_data["mode"]),
                 )
                 job = Job(record.id, spec, record.client, Path(record.work_dir))
                 job.phase, job.percent = record.phase, record.percent
@@ -538,10 +576,16 @@ class JobManager:
         return job
 
     def validate_duration(self, spec: ClipSpec) -> None:
-        source = self._repository.get_source(spec.url) if self._repository else None
+        source = None
+        if self._repository:
+            source = (
+                self._repository.get_source_by_id(spec.source_id)
+                if spec.source_id is not None
+                else self._repository.get_source(spec.url)
+            )
         if source is not None:
             duration = source.duration_seconds
-        elif self.metadata_fetcher is not None:
+        elif spec.url is not None and self.metadata_fetcher is not None:
             metadata = self.metadata_fetcher(spec.url)
             duration = metadata.get("duration")
         else:
@@ -645,11 +689,23 @@ class JobManager:
             try:
                 if self._repository:
                     with source_context(self._repository.add_source, self.ttl):
-                        clip = self.runner(job.spec, job.work_dir)
+                        if self.source_lookup is not None and self._runner_supports_sources:
+                            clip = self.runner(
+                                job.spec,
+                                job.work_dir,
+                                source_lookup=self.source_lookup,
+                                storage=self.storage,
+                            )
+                        else:
+                            clip = self.runner(job.spec, job.work_dir)
                 else:
                     clip = self.runner(job.spec, job.work_dir)
                 if self._repository:
-                    source = self._repository.get_source(job.spec.url)
+                    source = (
+                        self._repository.get_source_by_id(job.spec.source_id)
+                        if job.spec.source_id is not None
+                        else self._repository.get_source(job.spec.url)
+                    )
                     if source is not None:
                         clip = Clip(clip.path, source.title)
                 job.clip = clip

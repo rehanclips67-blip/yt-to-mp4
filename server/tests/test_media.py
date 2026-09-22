@@ -14,7 +14,6 @@ from app.formats import Quality
 from app.jobs import JobManager, JobStatus
 from app.media import (
     CaptionFetchError,
-    ClipSpec,
     MediaTimeoutError,
     Mode,
     PrimaryUrlError,
@@ -24,6 +23,7 @@ from app.media import (
     _run_ffmpeg,
     _timeout_hook,
     download_clip,
+    make_clip_spec,
     media_timeout_seconds,
     validate_primary_url,
 )
@@ -67,7 +67,17 @@ def probe(path):
 
 
 def test_exact_mode_cuts_on_the_requested_frames(video_url, tmp_path):
-    clip = download_clip(ClipSpec(video_url, 1.5, 4.0, Quality(720), Mode.EXACT), tmp_path)
+    clip = download_clip(
+        make_clip_spec(
+            url=video_url,
+            source_id=None,
+            start=1.5,
+            end=4.0,
+            quality=Quality(720),
+            mode=Mode.EXACT,
+        ),
+        tmp_path,
+    )
     duration, codecs = probe(clip.path)
     assert clip.path.suffix == ".mp4"
     assert duration == pytest.approx(2.5, abs=0.1)
@@ -75,14 +85,34 @@ def test_exact_mode_cuts_on_the_requested_frames(video_url, tmp_path):
 
 
 def test_fast_mode_returns_a_playable_clip(video_url, tmp_path):
-    clip = download_clip(ClipSpec(video_url, 1.5, 4.0, Quality(720), Mode.FAST), tmp_path)
+    clip = download_clip(
+        make_clip_spec(
+            url=video_url,
+            source_id=None,
+            start=1.5,
+            end=4.0,
+            quality=Quality(720),
+            mode=Mode.FAST,
+        ),
+        tmp_path,
+    )
     duration, _ = probe(clip.path)
     assert 2.5 <= duration <= 5.5  # snaps back to the previous keyframe
 
 
 def test_job_manager_runs_the_real_pipeline(video_url, tmp_path):
     manager = JobManager(download_clip, workers=1, root=tmp_path / "jobs")
-    job = manager.submit(ClipSpec(video_url, 2.0, 5.0, Quality(720), Mode.EXACT), "test")
+    job = manager.submit(
+        make_clip_spec(
+            url=video_url,
+            source_id=None,
+            start=2.0,
+            end=5.0,
+            quality=Quality(720),
+            mode=Mode.EXACT,
+        ),
+        "test",
+    )
     while job.status in (JobStatus.QUEUED, JobStatus.WORKING):
         time.sleep(0.05)
     assert job.status is JobStatus.DONE
