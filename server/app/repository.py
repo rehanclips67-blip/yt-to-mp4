@@ -43,6 +43,43 @@ class JobRepository:
             )
             return session.exec(query).first()
 
+    def get_source_by_id(self, source_id: str) -> Source | None:
+        with Session(self.engine) as session:
+            return session.get(Source, source_id)
+
+    def update_source(self, source_id: str, **values) -> Source | None:
+        with Session(self.engine) as session:
+            source = session.get(Source, source_id)
+            if source is None:
+                return None
+            for key, value in values.items():
+                setattr(source, key, value)
+            session.add(source)
+            session.commit()
+            session.refresh(source)
+            return source
+
+    def delete_source(self, source_id: str) -> bool:
+        with Session(self.engine) as session:
+            source = session.get(Source, source_id)
+            if source is None:
+                return False
+            session.delete(source)
+            session.commit()
+            return True
+
+    def expired_sources(self) -> list[Source]:
+        with Session(self.engine) as session:
+            return list(session.exec(select(Source).where(Source.expires_at <= utcnow())))
+
+    def delete_expired_sources(self) -> list[Source]:
+        with Session(self.engine) as session:
+            expired = list(session.exec(select(Source).where(Source.expires_at <= utcnow())))
+            for source in expired:
+                session.delete(source)
+            session.commit()
+            return expired
+
     def get(self, job_id: str) -> JobRecord | None:
         with Session(self.engine) as session:
             return session.get(JobRecord, job_id)

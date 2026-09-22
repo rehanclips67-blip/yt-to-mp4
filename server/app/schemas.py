@@ -162,3 +162,33 @@ class JobOut(BaseModel):
 
 class ExportJobOut(JobOut):
     filename: str | None = None
+
+
+class SourcePresignRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str
+
+
+class SourcePresignOut(BaseModel):
+    id: str
+    status: str
+    upload_url: str | None = None
+    upload_fields: dict[str, str] | None = None
+    expires_in: int
+
+
+class SourceOut(BaseModel):
+    id: str
+    source_type: str
+    title: str
+    duration_seconds: float
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    codec: str | None = None
+    status: str
+    expires_in: int
+
+
+class SourceCompleteOut(SourceOut):
+    pass

@@ -13,6 +13,8 @@ class FakeS3:
     def __init__(self):
         self.uploads = []
         self.deleted = []
+        self.posts = []
+        self.heads = []
 
     def upload_file(self, source, bucket, key):
         self.uploads.append((source, bucket, key))
@@ -23,6 +25,14 @@ class FakeS3:
     def generate_presigned_url(self, operation, Params, ExpiresIn):
         self.last_expires = ExpiresIn
         return f"https://storage.test/{Params['Key']}?X-Amz-Expires={ExpiresIn}"
+
+    def generate_presigned_post(self, bucket, key, Fields, Conditions, ExpiresIn):
+        self.posts.append((bucket, key, Fields, Conditions, ExpiresIn))
+        return {"url": "https://storage.test/upload", "fields": {"key": key}}
+
+    def head_object(self, **kwargs):
+        self.heads.append(kwargs)
+        return {"ContentLength": 42}
 
 
 def wait(job):
@@ -43,6 +53,20 @@ def test_s3_adapter_upload_key_and_signed_expiry(tmp_path):
     assert "X-Amz-Expires=120" in storage.signed_url(stored.key, 120)
     storage.delete(stored.key)
     assert client.deleted == [{"Bucket": "clipper-results", "Key": stored.key}]
+
+
+def test_s3_adapter_presigns_upload_and_heads_source():
+    client = FakeS3()
+    storage = ObjectStorage("s3", bucket="clipper-results", client=client)
+
+    form = storage.presigned_post("sources/source.mp4", "video/mp4", 100)
+    head = storage.head("sources/source.mp4")
+
+    assert form["url"] == "https://storage.test/upload"
+    assert client.posts[0][0:2] == ("clipper-results", "sources/source.mp4")
+    assert client.posts[0][2] == {"Content-Type": "video/mp4"}
+    assert head == {"ContentLength": 42}
+    assert client.heads == [{"Bucket": "clipper-results", "Key": "sources/source.mp4"}]
 
 
 def test_signed_url_never_exceeds_remaining_job_ttl():

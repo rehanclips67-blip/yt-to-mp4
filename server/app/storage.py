@@ -112,6 +112,44 @@ class ObjectStorage:
         except Exception as exc:
             raise StorageError(f"Could not create a signed URL for {key}") from exc
 
+    def presigned_post(self, key: str, content_type: str, max_bytes: int) -> dict:
+        if self.backend == "local":
+            raise StorageError("Presigned POST requires object storage")
+        try:
+            return self._client.generate_presigned_post(
+                self.bucket,
+                key,
+                Fields={"Content-Type": content_type},
+                Conditions=[
+                    {"Content-Type": content_type},
+                    ["content-length-range", 1, max_bytes],
+                ],
+                ExpiresIn=self.signed_url_seconds,
+            )
+        except Exception as exc:
+            raise StorageError(f"Could not create an upload form for {key}") from exc
+
+    def head(self, key: str) -> dict:
+        if self.backend == "local":
+            path = self.root / key
+            if not path.is_file():
+                raise StorageError(f"Source object does not exist: {key}")
+            return {"ContentLength": path.stat().st_size}
+        try:
+            return self._client.head_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:
+            raise StorageError(f"Could not inspect source object {key}") from exc
+
+    def download(self, key: str, target: Path) -> None:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if self.backend == "local":
+                shutil.copyfile(self.root / key, target)
+            else:
+                self._client.download_file(self.bucket, key, str(target))
+        except Exception as exc:
+            raise StorageError(f"Could not download source object {key}") from exc
+
     def signed_url_until(
         self,
         key: str,

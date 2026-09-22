@@ -82,6 +82,15 @@ includes the source FPS and codec/container where available. Job progress is sta
 Worker concurrency and encoder/decoder thread counts are bounded; job and export temporary directories
 are removed on failure and after the download TTL.
 
+Uploaded sources use a presign/upload/complete flow:
+
+1. `POST /api/sources/presign` with `filename` and `content_type` creates a pending source. Local mode
+   returns a protected upload URL; S3/MinIO returns a presigned POST URL and fields.
+2. Upload the bytes using the returned URL. Local uploads require the exact source id in the URL and
+   enforce the byte limit while streaming.
+3. `POST /api/sources/{id}/complete` validates the stored object with `ffprobe`, then
+   `GET /api/sources/{id}` returns pending or ready metadata. Pending sources expire automatically.
+
 ### Limits
 
 Longest clip per quality (`server/app/limits.py`, one table): 4K 10 min, 2K 30 min, 1080p 1 hour, 720p and below 3 hours.
@@ -120,6 +129,10 @@ Behind a reverse proxy, make sure the real client IP reaches the app (the per-us
 | `MEDIA_TIMEOUT_MIN_SECONDS` | `120`          | Minimum media-operation budget |
 | `MEDIA_TIMEOUT_MAX_SECONDS` | `7200`         | Maximum media-operation budget |
 | `MEDIA_MAX_DOWNLOAD_BYTES` | `4294967296` | Hard yt-dlp source-download cap (4 GiB) |
+| `MAX_UPLOAD_BYTES` | `1073741824` | Maximum uploaded source size (1 GiB) |
+| `MAX_UPLOAD_DURATION_SECONDS` | `10800` | Maximum uploaded source duration (3 hours) |
+| `ALLOWED_UPLOAD_CONTENT_TYPES` | `video/mp4,video/webm,video/quicktime` | Comma-separated upload MIME allowlist |
+| `UPLOAD_PENDING_TTL_SECONDS` | `900` | Lifetime of a pending upload |
 | `CLEANUP_GRACE_SECONDS` | `300`                 | Grace period before expired files are removed |
 | `STORAGE_BACKEND` | `local` | `local` (default), `s3`, or `minio` |
 | `STORAGE_BUCKET` | `clipper-results` | S3-compatible bucket |

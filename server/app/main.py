@@ -1,9 +1,15 @@
 """HTTP API: /api/info reads a video, /api/jobs cuts a clip in the background."""
 
+import json
 import logging
 import os
+import secrets
+import subprocess
+import tempfile
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from fractions import Fraction
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +42,9 @@ from .media import (
     validate_primary_url,
     whisper_is_configured,
 )
+from .models import Source, SourceType
 from .rate_limit import RateLimitDecision, make_rate_limiter
+from .repository import utcnow
 from .resources import ResourceAdmissionError, ResourceGuard
 from .schemas import (
     ClipRequest,
@@ -46,6 +54,10 @@ from .schemas import (
     InfoResponse,
     JobOut,
     QualityOut,
+    SourceCompleteOut,
+    SourceOut,
+    SourcePresignOut,
+    SourcePresignRequest,
     TranscriptJobOut,
     TranscriptRequest,
     TranscriptResponse,
@@ -57,6 +69,18 @@ log = logging.getLogger("clipper")
 configured_storage = (
     ObjectStorage.from_env() if os.getenv("STORAGE_BACKEND", "local").lower() != "local" else None
 )
+SOURCE_TTL_SECONDS = int(os.getenv("UPLOAD_PENDING_TTL_SECONDS", "900"))
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(1024**3)))
+MAX_UPLOAD_DURATION_SECONDS = int(os.getenv("MAX_UPLOAD_DURATION_SECONDS", str(3 * 60 * 60)))
+ALLOWED_UPLOAD_CONTENT_TYPES = frozenset(
+    item.strip()
+    for item in os.getenv(
+        "ALLOWED_UPLOAD_CONTENT_TYPES",
+        "video/mp4,video/webm,video/quicktime",
+    ).split(",")
+    if item.strip()
+)
+UPLOAD_ROOT = Path(os.getenv("UPLOAD_ROOT", "uploads"))
 
 app = FastAPI(title="Clipper")
 
@@ -113,6 +137,247 @@ transcript_jobs = TranscriptJobManager(
     max_concurrent=int(os.getenv("WHISPER_MAX_CONCURRENT", "1")),
 )
 submission_limiter = make_rate_limiter()
+source_repository = jobs._repository
+
+
+def _cleanup_expired_sources() -> None:
+    if source_repository is None:
+        return
+    for source in source_repository.delete_expired_sources():
+        if configured_storage is None:
+            Path(source.storage_key).unlink(missing_ok=True)
+        else:
+            try:
+                configured_storage.delete(source.storage_key)
+            except StorageError:
+                log.warning("source cleanup failed for %s", source.id, exc_info=True)
+
+
+def _delete_source_storage(source: Source, original_error: Exception) -> None:
+    try:
+        if configured_storage is None:
+            Path(source.storage_key).unlink(missing_ok=True)
+        else:
+            configured_storage.delete(source.storage_key)
+    except Exception as cleanup_error:
+        log.warning(
+            "source storage cleanup failed for %s after %r: %r",
+            source.id,
+            original_error,
+            cleanup_error,
+            exc_info=True,
+        )
+
+
+def _delete_local_path(path: Path, source_id: str) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        log.warning("local source cleanup failed for %s", source_id, exc_info=True)
+
+
+def _mark_source_failed(source_id: str) -> None:
+    try:
+        source_repository.update_source(source_id, status="failed")
+    except Exception:
+        log.warning("could not mark source %s as failed", source_id, exc_info=True)
+
+
+def _source_view(source: Source) -> SourceOut:
+    return SourceOut(
+        id=source.id,
+        source_type=source.source_type.value,
+        title=source.title,
+        duration_seconds=source.duration_seconds,
+        width=source.width,
+        height=source.height,
+        fps=source.fps,
+        codec=source.codec,
+        status=source.status,
+        expires_in=max(0, int((source.expires_at - utcnow()).total_seconds())),
+    )
+
+
+def _probe_source(path: Path) -> dict:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=width,height,r_frame_rate,codec_name,codec_type",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+        payload = json.loads(result.stdout)
+        duration = float(payload["format"]["duration"])
+        video = next(
+            item for item in payload.get("streams", []) if item.get("codec_type") == "video"
+        )
+        fps_text = video.get("r_frame_rate")
+        fps = None if not fps_text or fps_text == "0/0" else float(Fraction(fps_text))
+        if duration <= 0 or duration > MAX_UPLOAD_DURATION_SECONDS:
+            raise ValueError("duration")
+        return {
+            "duration_seconds": duration,
+            "width": video.get("width"),
+            "height": video.get("height"),
+            "fps": fps,
+            "codec": video.get("codec_name"),
+        }
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        json.JSONDecodeError,
+        KeyError,
+        StopIteration,
+        TypeError,
+        ValueError,
+        ZeroDivisionError,
+    ) as exc:
+        raise HTTPException(422, "The uploaded file is not a supported video.") from exc
+
+
+@app.post("/api/sources/presign", status_code=201)
+def presign_source(req: SourcePresignRequest) -> SourcePresignOut:
+    if source_repository is None:
+        raise HTTPException(503, "Source storage is unavailable.")
+    _cleanup_expired_sources()
+    if req.content_type not in ALLOWED_UPLOAD_CONTENT_TYPES:
+        raise HTTPException(415, "That upload content type is not allowed.")
+    suffix = Path(req.filename).suffix.lower()
+    if not suffix:
+        raise HTTPException(422, "A video filename with an extension is required.")
+    source_id = secrets.token_urlsafe(16)
+    created_at = utcnow()
+    if configured_storage is None:
+        UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+        storage_key = str((UPLOAD_ROOT / f"{source_id}{suffix}").resolve())
+        upload_url = f"/api/sources/{source_id}/upload"
+        upload_fields = None
+    else:
+        storage_key = f"sources/{source_id}{suffix}"
+        try:
+            form = configured_storage.presigned_post(
+                storage_key, req.content_type, MAX_UPLOAD_BYTES
+            )
+        except StorageError as exc:
+            raise HTTPException(503, "Source storage is unavailable.") from exc
+        upload_url = form["url"]
+        upload_fields = form["fields"]
+    source_repository.add_source(
+        Source(
+            id=source_id,
+            source_type=SourceType.upload,
+            storage_key=storage_key,
+            title=Path(req.filename).stem,
+            duration_seconds=0,
+            status="pending",
+            created_at=created_at,
+            expires_at=created_at + timedelta(seconds=SOURCE_TTL_SECONDS),
+        )
+    )
+    return SourcePresignOut(
+        id=source_id,
+        status="pending",
+        upload_url=upload_url,
+        upload_fields=upload_fields,
+        expires_in=SOURCE_TTL_SECONDS,
+    )
+
+
+@app.put("/api/sources/{source_id}/upload", status_code=204)
+async def upload_source(source_id: str, request: Request) -> None:
+    if source_repository is None:
+        raise HTTPException(503, "Source storage is unavailable.")
+    source = source_repository.get_source_by_id(source_id)
+    if source is None or source.expires_at <= utcnow():
+        raise HTTPException(404, "That source has expired.")
+    if source.status != "pending" or configured_storage is not None:
+        raise HTTPException(409, "That source is not accepting a local upload.")
+    partial = Path(source.storage_key).with_suffix(Path(source.storage_key).suffix + ".part")
+    path = Path(source.storage_key)
+    total = 0
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with partial.open("wb") as output:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "The uploaded file is too large.")
+                output.write(chunk)
+        partial.replace(path)
+    except HTTPException:
+        _delete_local_path(partial, source_id)
+        _delete_local_path(path, source_id)
+        source_repository.delete_source(source_id)
+        raise
+    except OSError as exc:
+        _delete_local_path(partial, source_id)
+        _delete_local_path(path, source_id)
+        _mark_source_failed(source_id)
+        raise HTTPException(500, "The upload could not be stored.") from exc
+
+
+def _complete_source(source: Source) -> Source:
+    temporary = None
+    path = Path(source.storage_key)
+    try:
+        if configured_storage is not None:
+            head = configured_storage.head(source.storage_key)
+            if int(head.get("ContentLength", 0)) > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "The uploaded file is too large.")
+            temporary = Path(tempfile.mkstemp(suffix=path.suffix)[1])
+            configured_storage.download(source.storage_key, temporary)
+            path = temporary
+        metadata = _probe_source(path)
+        updated = source_repository.update_source(source.id, status="ready", **metadata)
+        if updated is None:
+            raise HTTPException(404, "That source has expired.")
+        return updated
+    except StorageError as exc:
+        raise HTTPException(422, "The uploaded file could not be inspected.") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+@app.post("/api/sources/{source_id}/complete", response_model=SourceCompleteOut)
+def complete_source(source_id: str) -> SourceCompleteOut:
+    if source_repository is None:
+        raise HTTPException(503, "Source storage is unavailable.")
+    source = source_repository.get_source_by_id(source_id)
+    if source is None or source.expires_at <= utcnow():
+        raise HTTPException(404, "That source has expired.")
+    if source.status != "pending":
+        raise HTTPException(409, "That source is not pending.")
+    try:
+        return _source_view(_complete_source(source))
+    except Exception as exc:
+        _delete_source_storage(source, exc)
+        _mark_source_failed(source_id)
+        if isinstance(exc, HTTPException):
+            raise
+        log.error("source completion failed for %s", source_id, exc_info=True)
+        raise HTTPException(500, "The uploaded source could not be completed.") from exc
+
+
+@app.get("/api/sources/{source_id}", response_model=SourceOut)
+def get_source(source_id: str) -> SourceOut:
+    if source_repository is None:
+        raise HTTPException(503, "Source storage is unavailable.")
+    source = source_repository.get_source_by_id(source_id)
+    if source is None or source.expires_at <= utcnow():
+        raise HTTPException(404, "That source has expired.")
+    return _source_view(source)
 
 
 @app.post("/api/info")
