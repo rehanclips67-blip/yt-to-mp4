@@ -1,5 +1,4 @@
 import os
-import subprocess
 
 
 def main() -> None:
@@ -11,7 +10,7 @@ def main() -> None:
     if not 1 <= port <= 65535:
         raise SystemExit(f"PORT must be between 1 and 65535, got {port}")
 
-    subprocess.execvp(
+    os.execvp(
         "uvicorn",
         ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(port)],
     )
