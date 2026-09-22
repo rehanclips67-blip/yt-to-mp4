@@ -285,13 +285,15 @@ class ExportJobManager:
                         break
                     job.phase, job.percent = "cutting", 10 + int(70 * (index + 1) / len(job.specs))
             if "outcome" not in locals():
-                job.title = safe_title(clips[0].title)
+                source = self._repository.get_source(job.specs[0].url) if self._repository else None
+                title = source.title if source is not None else clips[0].title
+                job.title = safe_title(title)
                 job.phase, job.percent = "packaging", 90
                 zip_path = job.work_dir / "export.zip"
                 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                     for index, (spec, clip) in enumerate(zip(job.specs, clips, strict=True), 1):
                         archive.write(
-                            clip.path, export_filename(clip.title, index, spec.start, spec.end)
+                            clip.path, export_filename(title, index, spec.start, spec.end)
                         )
                 job.path = zip_path
                 if self.storage is not None:
@@ -536,10 +538,14 @@ class JobManager:
         return job
 
     def validate_duration(self, spec: ClipSpec) -> None:
-        if self.metadata_fetcher is None:
+        source = self._repository.get_source(spec.url) if self._repository else None
+        if source is not None:
+            duration = source.duration_seconds
+        elif self.metadata_fetcher is not None:
+            metadata = self.metadata_fetcher(spec.url)
+            duration = metadata.get("duration")
+        else:
             return
-        metadata = self.metadata_fetcher(spec.url)
-        duration = metadata.get("duration")
         if duration is None:
             raise ValueError("The source video duration is unavailable.")
         if spec.end > float(duration):
@@ -642,6 +648,10 @@ class JobManager:
                         clip = self.runner(job.spec, job.work_dir)
                 else:
                     clip = self.runner(job.spec, job.work_dir)
+                if self._repository:
+                    source = self._repository.get_source(job.spec.url)
+                    if source is not None:
+                        clip = Clip(clip.path, source.title)
                 job.clip = clip
                 if job.id in self._cancelled:
                     shutil.rmtree(job.work_dir, ignore_errors=True)

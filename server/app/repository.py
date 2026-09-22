@@ -30,6 +30,19 @@ class JobRepository:
             session.refresh(source)
         return source
 
+    def get_source(self, original_url: str) -> Source | None:
+        with Session(self.engine) as session:
+            query = (
+                select(Source)
+                .where(
+                    Source.original_url == original_url,
+                    Source.status == "ready",
+                    Source.expires_at > utcnow(),
+                )
+                .order_by(Source.created_at.desc())
+            )
+            return session.exec(query).first()
+
     def get(self, job_id: str) -> JobRecord | None:
         with Session(self.engine) as session:
             return session.get(JobRecord, job_id)
