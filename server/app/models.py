@@ -1,8 +1,31 @@
 """SQLModel persistence records (API-facing job objects remain in jobs.py)."""
 
 from datetime import UTC, datetime
+from enum import Enum
 
 from sqlmodel import Field, SQLModel
+
+
+class SourceType(str, Enum):  # noqa: UP042
+    youtube = "youtube"
+    upload = "upload"
+
+
+class Source(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    source_type: SourceType
+    original_url: str | None = None
+    storage_key: str
+    title: str
+    duration_seconds: float
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    codec: str | None = None
+    thumbnail_key: str | None = None
+    status: str
+    created_at: datetime
+    expires_at: datetime
 
 
 class JobRecord(SQLModel, table=True):
