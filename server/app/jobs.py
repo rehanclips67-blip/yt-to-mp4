@@ -21,7 +21,7 @@ from yt_dlp.utils import YoutubeDLError
 
 from .db import create_db_and_tables, make_engine
 from .formats import Quality
-from .media import Clip, ClipSpec, Mode
+from .media import Clip, ClipSpec, Mode, source_context
 from .models import JobRecord
 from .queue import make_queue
 from .repository import JobRepository
@@ -265,13 +265,21 @@ class ExportJobManager:
             if job.status is JobStatus.CANCELLED or job.id in self._cancelled:
                 outcome = JobStatus.CANCELLED
             elif self.export_runner is not None:
-                clips = self.export_runner(job.specs, job.work_dir)
+                if self._repository:
+                    with source_context(self._repository.add_source, self.ttl):
+                        clips = self.export_runner(job.specs, job.work_dir)
+                else:
+                    clips = self.export_runner(job.specs, job.work_dir)
             else:
                 clips = []
                 for index, spec in enumerate(job.specs):
                     part_dir = job.work_dir / f"part-{index}"
                     part_dir.mkdir()
-                    clips.append(self.runner(spec, part_dir))
+                    if self._repository:
+                        with source_context(self._repository.add_source, self.ttl):
+                            clips.append(self.runner(spec, part_dir))
+                    else:
+                        clips.append(self.runner(spec, part_dir))
                     if job.id in self._cancelled:
                         outcome = JobStatus.CANCELLED
                         break
@@ -629,7 +637,12 @@ class JobManager:
                 outcome = JobStatus.CANCELLED
                 break
             try:
-                job.clip = self.runner(job.spec, job.work_dir)
+                if self._repository:
+                    with source_context(self._repository.add_source, self.ttl):
+                        clip = self.runner(job.spec, job.work_dir)
+                else:
+                    clip = self.runner(job.spec, job.work_dir)
+                job.clip = clip
                 if job.id in self._cancelled:
                     shutil.rmtree(job.work_dir, ignore_errors=True)
                     outcome = JobStatus.CANCELLED

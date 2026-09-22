@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from sqlmodel import Session, select
 
-from .models import JobRecord
+from .models import JobRecord, Source
 
 
 def utcnow() -> datetime:
@@ -22,6 +22,13 @@ class JobRepository:
             session.commit()
             session.refresh(record)
         return record
+
+    def add_source(self, source: Source) -> Source:
+        with Session(self.engine) as session:
+            session.add(source)
+            session.commit()
+            session.refresh(source)
+        return source
 
     def get(self, job_id: str) -> JobRecord | None:
         with Session(self.engine) as session:

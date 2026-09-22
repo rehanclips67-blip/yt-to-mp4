@@ -4,13 +4,18 @@ import html
 import importlib.util
 import ipaddress
 import json
+import logging
 import os
 import re
+import secrets
 import socket
 import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
@@ -21,6 +26,7 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import download_range_func
 
 from .formats import Quality
+from .models import Source, SourceType
 
 
 class Mode(StrEnum):
@@ -80,6 +86,51 @@ _CAPTION_HOSTS = frozenset(
     }
 )
 _CAPTION_MAX_BYTES = 4 * 1024 * 1024
+_source_writer: ContextVar[tuple[Callable[[Source], None], int] | None] = ContextVar(
+    "source_writer", default=None
+)
+log = logging.getLogger("clipper.media")
+
+
+@contextmanager
+def source_context(writer: Callable[[Source], None], ttl: int):
+    token = _source_writer.set((writer, ttl))
+    try:
+        yield
+    finally:
+        _source_writer.reset(token)
+
+
+def _create_source(info: dict, path: Path, url: str) -> None:
+    context = _source_writer.get()
+    if context is None:
+        return
+    writer, ttl = context
+    try:
+        formats = info.get("requested_downloads") or info.get("requested_formats") or []
+        selected = next(
+            (item for item in formats if item.get("vcodec") not in {None, "none"}), info
+        )
+        created_at = datetime.now(UTC)
+        writer(
+            Source(
+                id=secrets.token_urlsafe(16),
+                source_type=SourceType.youtube,
+                original_url=url,
+                storage_key=str(path.resolve()),
+                title=info["title"],
+                duration_seconds=float(info.get("duration") or 0),
+                width=selected.get("width") or info.get("width"),
+                height=selected.get("height") or info.get("height"),
+                fps=selected.get("fps") or info.get("fps"),
+                codec=selected.get("vcodec") or selected.get("codec") or info.get("vcodec"),
+                status="ready",
+                created_at=created_at,
+                expires_at=created_at + timedelta(seconds=ttl),
+            )
+        )
+    except Exception:
+        log.warning("source persistence failed for %s", url, exc_info=True)
 
 
 def _max_download_bytes() -> int:
@@ -398,7 +449,9 @@ def download_clip(spec: ClipSpec, out_dir: Path) -> Clip:
 
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(spec.url, download=True)
-    return Clip(Path(info["requested_downloads"][0]["filepath"]), info["title"])
+    path = Path(info["requested_downloads"][0]["filepath"])
+    _create_source(info, path, spec.url)
+    return Clip(path, info["title"])
 
 
 def download_export(specs: tuple[ClipSpec, ...], out_dir: Path) -> list[Clip]:
@@ -434,6 +487,7 @@ def download_export(specs: tuple[ClipSpec, ...], out_dir: Path) -> list[Clip]:
             candidate = source.with_suffix(".mp4")
             if candidate.exists():
                 source = candidate
+    _create_source(info, source, first.url)
     outputs: list[Clip] = []
     for index, spec in enumerate(specs):
         target = out_dir / f"clip-{index}.mp4"
