@@ -183,10 +183,12 @@
 .filePicker {
   display: flex;
   align-items: center;
+  gap: 16px;
   width: 100%;
   min-width: 0;
   height: 100%;
   padding-left: 44px;
+  padding-right: 12px;
   animation: inputCrossfade 200ms ease both;
 }
 
@@ -227,16 +229,17 @@
   justify-content: center;
   height: 100%;
   padding: 0 18px;
+  border: 1px solid var(--hairline);
   border-radius: var(--radius-inner);
-  background: var(--ink);
-  color: #fff;
+  background: transparent;
+  color: var(--ink);
   cursor: pointer;
   font: 500 15px/1 var(--sans);
   transition: background-color 150ms cubic-bezier(0.25, 0.1, 0.25, 1), transform 150ms cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 .filePickerButton:hover {
-  background: var(--ink-hover);
+  background: #F5F5F7;
   transform: translateY(-1px);
 }
 
@@ -328,7 +331,7 @@
 .submit:disabled {
   background: var(--ink);
   color: #fff;
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: not-allowed;
   transform: none;
 }

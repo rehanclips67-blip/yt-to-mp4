@@ -144,7 +144,12 @@ export function Tool() {
                     <label className={styles.filePickerButton} htmlFor="video-file">Choose a video</label>
                   </div>
                 )}
-                <button type="submit" className={styles.submit} aria-label={loading ? "Loading video" : inputMode === "upload" ? "Upload video" : "Clip it"}>
+                <button
+                  type="submit"
+                  className={styles.submit}
+                  disabled={loading || (inputMode === "upload" && !selectedFileName)}
+                  aria-label={loading ? "Loading video" : inputMode === "upload" ? "Upload video" : "Clip it"}
+                >
                   <span className={styles.submitLabel}>{loading ? "Loading…" : inputMode === "upload" ? "Upload" : "Clip it"}</span>
                   <span className={styles.submitArrow} aria-hidden="true">{loading ? "…" : "→"}</span>
                 </button>
