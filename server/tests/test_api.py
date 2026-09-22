@@ -189,6 +189,18 @@ def test_security_headers_are_present(client):
     assert response.headers["strict-transport-security"].startswith("max-age=")
 
 
+def test_docs_csp_allows_only_required_swagger_resources(client):
+    response = client.get("/docs")
+    assert response.status_code == 200
+    assert response.headers["content-security-policy"] == (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https://fastapi.tiangolo.com; "
+        "connect-src 'self'"
+    )
+
+
 def test_job_lifecycle_ends_in_a_downloadable_file(client):
     created = client.post("/api/jobs", json=CLIP)
     assert created.status_code == 202

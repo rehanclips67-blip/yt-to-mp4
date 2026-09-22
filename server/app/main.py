@@ -84,13 +84,21 @@ UPLOAD_ROOT = Path(os.getenv("UPLOAD_ROOT", "uploads"))
 
 app = FastAPI(title="Clipper")
 
+API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+DOCS_CSP = (
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "img-src 'self' data: https://fastapi.tiangolo.com; "
+    "connect-src 'self'"
+)
+
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers.setdefault(
-        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
-    )
+    csp = DOCS_CSP if request.url.path in {app.docs_url, app.redoc_url} else API_CSP
+    response.headers.setdefault("Content-Security-Policy", csp)
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
