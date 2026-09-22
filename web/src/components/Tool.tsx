@@ -14,6 +14,7 @@ export function Tool() {
   const [state, setState] = useState<State>({ status: "idle" });
   const [validationHint, setValidationHint] = useState("");
   const [inputMode, setInputMode] = useState<"youtube" | "upload">("youtube");
+  const [selectedFileName, setSelectedFileName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
 
@@ -105,21 +106,44 @@ export function Tool() {
                     <path d="m16.75 6.25 1-1a3.18 3.18 0 0 1 4.5 4.5l-3.5 3.5a3.18 3.18 0 0 1-4.5 0" />
                   </svg>
                 </span>
-                <input
-                  ref={inputRef}
-                  id={inputMode === "youtube" ? "youtube-url" : "video-file"}
-                  name={inputMode === "youtube" ? "video-url" : "video-file"}
-                  type={inputMode === "youtube" ? "url" : "file"}
-                  accept={inputMode === "upload" ? "video/*" : undefined}
-                  inputMode={inputMode === "youtube" ? "url" : undefined}
-                  autoComplete="off"
-                  required
-                  autoFocus
-                  placeholder={inputMode === "youtube" ? "Paste YouTube link…" : undefined}
-                  aria-label={inputMode === "youtube" ? "YouTube link" : "Video file"}
-                  onChange={() => setValidationHint("")}
-                  onFocus={() => setValidationHint("")}
-                />
+                {inputMode === "youtube" ? (
+                  <input
+                    ref={inputRef}
+                    id="youtube-url"
+                    name="video-url"
+                    type="url"
+                    inputMode="url"
+                    autoComplete="off"
+                    required
+                    autoFocus
+                    placeholder="Paste YouTube link…"
+                    aria-label="YouTube link"
+                    onChange={() => setValidationHint("")}
+                    onFocus={() => setValidationHint("")}
+                  />
+                ) : (
+                  <div className={styles.filePicker}>
+                    <input
+                      id="video-file"
+                      name="video-file"
+                      type="file"
+                      accept="video/*"
+                      required
+                      autoFocus
+                      className={styles.fileInput}
+                      aria-label="Video file"
+                      onChange={(event) => {
+                        setSelectedFileName(event.currentTarget.files?.[0]?.name ?? "");
+                        setValidationHint("");
+                      }}
+                      onFocus={() => setValidationHint("")}
+                    />
+                    <span className={`${styles.fileName} ${selectedFileName ? styles.fileNameSelected : ""}`} title={selectedFileName || "No file selected"}>
+                      {selectedFileName || "No file selected"}
+                    </span>
+                    <label className={styles.filePickerButton} htmlFor="video-file">Choose a video</label>
+                  </div>
+                )}
                 <button type="submit" className={styles.submit} aria-label={loading ? "Loading video" : inputMode === "upload" ? "Upload video" : "Clip it"}>
                   <span className={styles.submitLabel}>{loading ? "Loading…" : inputMode === "upload" ? "Upload" : "Clip it"}</span>
                   <span className={styles.submitArrow} aria-hidden="true">{loading ? "…" : "→"}</span>
