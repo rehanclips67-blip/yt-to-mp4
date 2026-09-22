@@ -54,6 +54,24 @@ export function Timeline({ duration, videoId, thumbnail, range, playhead, onRang
       ? { start: clamp(seconds, 0, range.end - MIN_CLIP), end: range.end }
       : { start: range.start, end: clamp(seconds, range.start + MIN_CLIP, duration) };
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.matches("input, textarea, select, [contenteditable='true']")) return;
+
+      if (event.key.toLowerCase() === "i") {
+        event.preventDefault();
+        onRangeChange(withEdge("start", playhead));
+      } else if (event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        onRangeChange(withEdge("end", playhead));
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onRangeChange, playhead, range.end, range.start, duration]);
+
   const nudge = (edge: Edge, event: React.KeyboardEvent) => {
     const direction = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
     if (!direction) return;

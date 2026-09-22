@@ -1,32 +1,53 @@
-.timeline { position: relative; width: 100%; margin-top: 16px; padding-top: 40px; user-select: none; touch-action: none; }
+.timeline { position: relative; width: 100%; margin-top: 24px; padding-top: 40px; user-select: none; touch-action: none; }
 .track { position: relative; width: 100%; height: 64px; overflow: visible; cursor: pointer; }
 .frames {
   position: absolute; inset: 0; z-index: 0; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
-  overflow: hidden; border: 1px solid var(--line, #e6e6e6); border-radius: 2px; background: #ddd;
+  overflow: hidden; border: 1px solid rgba(29,29,31,.12); border-radius: 10px; background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 14px -12px rgba(0,0,0,.16);
 }
 .frame { min-width: 0; overflow: hidden; border-right: 1px solid #fff; background: #d8d8d5; }
 .frame:last-child { border-right: 0; }
 .frame img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.dim { position: absolute; top: 0; bottom: 0; z-index: 1; background: rgba(255,255,255,.4); pointer-events: none; }
+.dim { position: absolute; top: 0; bottom: 0; z-index: 1; background: rgba(0, 0, 0, 0.55); pointer-events: none; }
 .dimRight { right: 0; }
-.range { position: absolute; top: 0; bottom: 0; z-index: 2; box-sizing: border-box; border-top: 3px solid var(--ink, #0a0a0a); border-bottom: 3px solid var(--ink, #0a0a0a); pointer-events: none; }
+.range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  box-sizing: border-box;
+  border: 2px solid #1D1D1F;
+  pointer-events: none;
+}
 .playhead { position: absolute; top: -4px; bottom: -4px; z-index: 4; width: 2px; background: var(--ink, #0a0a0a); box-shadow: 0 0 0 1px #fff; pointer-events: none; }
 .tooltip {
   position: absolute; bottom: calc(100% + 12px); z-index: 5; display: flex; align-items: center; height: 24px;
-  padding: 0 8px; border-radius: 2px; background: var(--ink, #0a0a0a); color: #fff;
+  padding: 0 8px; border-radius: 6px; background: var(--ink); color: #fff;
   font: 500 11px/1 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; transform: translateX(-50%); pointer-events: none;
 }
-.handle { position: absolute; top: -8px; bottom: -8px; z-index: 3; width: 24px; padding: 0; border: 0; background: transparent; cursor: ew-resize; touch-action: none; transform: translateX(-50%); }
-.handle::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 8px; transform: translateX(-50%); border-radius: 2px; background: var(--ink, #0a0a0a); box-shadow: 0 0 0 1px #fff; }
-.handle::after { content: ""; position: absolute; top: 50%; width: 1px; height: 14px; background: #fff; transform: translateY(-50%); }
-.start::after { left: 50%; box-shadow: 3px 0 #fff; }
-.end::after { right: 50%; box-shadow: -3px 0 #fff; }
-.handle:focus-visible::before { outline: 2px solid var(--ink, #0a0a0a); outline-offset: 3px; }
-.narrow::before { width: 5px; }
+.handle { position: absolute; top: 0; bottom: 0; z-index: 5; width: 24px; padding: 0; border: 0; background: transparent; cursor: ew-resize; touch-action: none; }
+.start { transform: translateX(-100%); }
+.end { transform: translateX(0); }
+.handle::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 6px; transform: translateX(-50%); border-radius: 2px; background: var(--ink); transition: width 150ms cubic-bezier(0.25, 0.1, 0.25, 1), box-shadow 150ms cubic-bezier(0.25, 0.1, 0.25, 1); }
+.handle::after { content: ""; position: absolute; top: 50%; left: 50%; width: 2px; height: 16px; border-radius: 1px; background: #fff; transform: translate(-50%, -50%); }
+.start::before,
+.start::after { left: 100%; }
+.end::before,
+.end::after { left: 0; }
+.handle:hover::before { width: 8px; box-shadow: 0 0 0 2px rgba(29,29,31,.12); }
+.handle:active::before { box-shadow: 0 2px 8px rgba(0,0,0,.15); transition-duration: 100ms; }
+.handle:focus-visible::before { outline: 2px solid var(--ink); outline-offset: 2px; }
+.narrow::before { width: 6px; }
 .narrow::after { display: none; }
-.ruler { position: relative; width: 100%; height: 22px; margin-top: 12px; color: var(--muted); font: 400 11px var(--mono); font-variant-numeric: tabular-nums; }
+.ruler { position: relative; width: 100%; height: 22px; margin-top: 12px; color: var(--text-tertiary); font: 400 11px var(--mono); font-variant-numeric: tabular-nums; }
 .tick { position: absolute; top: 0; height: 6px; padding-top: 9px; white-space: nowrap; }
-.tick::before { position: absolute; top: 0; left: 0; height: 6px; border-left: 1px solid var(--line); content: ""; }
+.tick::before { position: absolute; top: 0; left: 0; height: 4px; border-left: 1px solid var(--hairline); content: ""; }
 .firstTick { left: 0 !important; }
 .lastTick { transform: translateX(-100%); }
-.lastTick::before { right: 0; left: auto; border-right: 1px solid var(--line); border-left: 0; }
+.lastTick::before { right: 0; left: auto; border-right: 1px solid var(--hairline); border-left: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .handle::before {
+    transition-duration: 0ms;
+  }
+}

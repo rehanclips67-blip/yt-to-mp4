@@ -449,7 +449,10 @@ export function Workspace({ info, url }: Props) {
         </div>
 
         <div className={styles.action} aria-live="polite">
-          <div className={styles.summary}><span>{formatTime(length)}</span><span>~{formatSize(estimatedBytes)}</span></div>
+          <div className={styles.summary}>
+            <span><small>Length</small>{formatTime(length)}</span>
+            <span><small>Est. size</small>~{formatSize(estimatedBytes)}</span>
+          </div>
           {view.stage === "done" ? (
             <>
               <a className={styles.exportDownload} href={fileUrl(view.id)}>

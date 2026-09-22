@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { fetchInfo, type VideoInfo } from "@/lib/api";
 import { Workspace } from "./Workspace";
 import styles from "./Tool.module.css";
@@ -12,11 +12,37 @@ type State =
 
 export function Tool() {
   const [state, setState] = useState<State>({ status: "idle" });
+  const [validationHint, setValidationHint] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
   const loading = state.status === "loading";
+
+  const validateUrl = (value: string) => {
+    if (!value) return "Please enter a valid YouTube link.";
+
+    try {
+      const parsed = new URL(value);
+      const host = parsed.hostname.replace(/^www\./, "");
+      if (!/^(youtube\.com|youtu\.be|m\.youtube\.com)$/.test(host)) {
+        return "Please enter a valid YouTube link.";
+      }
+      return "";
+    } catch {
+      return "Please enter a valid YouTube link.";
+    }
+  };
 
   const load = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const url = String(new FormData(event.currentTarget).get("url")).trim();
+    const url = String(new FormData(event.currentTarget).get("video-url")).trim();
+    const validationMessage = validateUrl(url);
+
+    if (validationMessage) {
+      setValidationHint(validationMessage);
+      inputRef.current?.focus();
+      return;
+    }
+
+    setValidationHint("");
     setState({ status: "loading" });
     try {
       setState({ status: "ready", url, info: await fetchInfo(url) });
@@ -48,7 +74,7 @@ export function Tool() {
                 <p className={styles.description}>Paste a YouTube link, choose your moment,<br className={styles.desktopBreak} /> and download the clip.</p>
               </div>
 
-              <form className={styles.form} onSubmit={load}>
+              <form className={styles.form} onSubmit={load} noValidate>
                 <label className={styles.srOnly} htmlFor="youtube-url">YouTube URL</label>
                 <span className={styles.inputIcon} aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none">
@@ -57,23 +83,32 @@ export function Tool() {
                   </svg>
                 </span>
                 <input
+                  ref={inputRef}
                   id="youtube-url"
-                  name="url"
+                  name="video-url"
                   type="url"
+                  inputMode="url"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   required
                   autoFocus
                   placeholder="Paste YouTube link…"
                   aria-label="YouTube link"
+                  onChange={() => setValidationHint("")}
+                  onFocus={() => setValidationHint("")}
                 />
-                <button type="submit" className={styles.submit} disabled={loading} aria-label={loading ? "Loading video" : "Clip it"}>
+                <button type="submit" className={styles.submit} aria-label={loading ? "Loading video" : "Clip it"}>
                   <span className={styles.submitLabel}>{loading ? "Loading…" : "Clip it"}</span>
                   <span className={styles.submitArrow} aria-hidden="true">{loading ? "…" : "→"}</span>
                 </button>
               </form>
+              {validationHint && <p className={styles.inlineHint} aria-live="polite">{validationHint}</p>}
               <p className={styles.microcopy}>
-                <span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1" /><path d="M8 21h8M12 17v4" /></svg>Up to 4K</span>
-                <span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5 18.5 6v6.2c0 4.5-2.7 7.6-6.5 10.3-3.8-2.7-6.5-5.8-6.5-10.3V6L12 3.5Z" /><path d="m9.5 12.2 1.7 1.8 3.5-3.8" /></svg>No signup</span>
-                <span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5 18.5 6v6.2c0 4.5-2.7 7.6-6.5 10.3-3.8-2.7-6.5-5.8-6.5-10.3V6L12 3.5Z" /><path d="m9.5 12.2 2.2 2.2 4.5-4.8" /></svg>No watermark</span>
+                <span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 19h8M12 17v2" /></svg>Up to 4K</span>
+                <span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10" cy="8" r="3.5" /><path d="M3 20a7 7 0 0 1 14 0M17 6l4 4M21 6l-4 4" /></svg>No signup</span>
+                <span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 18 5-5 3 3 4-5 6 7" /><path d="m3 3 18 18" /></svg>No watermark</span>
               </p>
 
               {loading && (
@@ -92,8 +127,11 @@ export function Tool() {
 
       <footer className={styles.footer}>
         <div className={styles.footerInner}>
-          <strong>No signup. No watermark. Clips up to 4K.</strong>
-          <span>Simple. Fast. Powerful.</span>
+          <span className={styles.footerBrand}>© 2026 Clipper</span>
+          <nav className={styles.footerLinks} aria-label="Footer links">
+            <a href="#">Privacy</a>
+            <a href="#">Terms</a>
+          </nav>
         </div>
       </footer>
     </div>
@@ -103,13 +141,10 @@ export function Tool() {
 function ClippingPreview() {
   return (
     <div className={styles.visual} aria-hidden="true">
-      <p className={styles.visualCaption}>EXTRACT<br />THE MOMENTS<br />THAT MATTER.</p>
       <div className={styles.visualStage}>
         <div className={styles.stack}>
-          <span className={styles.outlineFrame} />
-          <span className={`${styles.outlineFrame} ${styles.outlineFrameSecond}`} />
           <div className={styles.thumbnails}>
-            <span /><span /><span />
+            <span /><span />
           </div>
           <div className={styles.mainFrame}>
             <span className={styles.framePlaceholder}>VIDEO PREVIEW</span>
@@ -120,6 +155,7 @@ function ClippingPreview() {
                 <span>0:42 / 2:18</span>
               </div>
               <div className={styles.frameTrack} aria-hidden="true">
+                <span className={styles.frameRangeLabel}>0:18</span>
                 <span className={styles.frameTrackSelected} />
                 <span className={`${styles.frameHandle} ${styles.frameHandleStart}`} />
                 <span className={`${styles.frameHandle} ${styles.frameHandleEnd}`} />
