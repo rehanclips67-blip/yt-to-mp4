@@ -113,6 +113,20 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+
+def _youtube_info_error(error: YoutubeDLError) -> str:
+    detail = str(error).lower()
+    if "sign in to confirm" in detail or "not a bot" in detail:
+        return "YouTube requires verification for this video. Try again later or upload the video instead."
+    if "private video" in detail or "sign in" in detail:
+        return "This video is private or requires a YouTube login."
+    if "age-restricted" in detail or "confirm your age" in detail:
+        return "This video is age-restricted and cannot be read without YouTube verification."
+    if "video unavailable" in detail or "not available" in detail:
+        return "This video is unavailable to the server. Check its visibility and try again."
+    return "YouTube could not provide this video's metadata. Try again later or upload the video instead."
+
+
 resource_guard = ResourceGuard()
 
 # Clips are CPU and bandwidth heavy, so only a few run at once and the rest wait in line.
@@ -415,7 +429,7 @@ def info(req: InfoRequest) -> InfoResponse:
         raise HTTPException(422, str(e)) from e
     except YoutubeDLError as e:
         log.warning("info failed for %s: %s", req.url, e)
-        raise HTTPException(422, "Couldn't read that video. It may be private or gone.") from e
+        raise HTTPException(422, _youtube_info_error(e)) from e
 
     if not raw.get("duration"):
         raise HTTPException(422, "Live streams aren't supported.")

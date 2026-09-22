@@ -117,6 +117,17 @@ def test_info_rejects_live_streams(client, monkeypatch):
     assert client.post("/api/info", json={"url": URL}).status_code == 422
 
 
+def test_info_reports_youtube_verification_errors(client, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "fetch_info",
+        lambda url: (_ for _ in ()).throw(main.YoutubeDLError("Sign in to confirm you're not a bot")),
+    )
+    response = client.post("/api/info", json={"url": URL})
+    assert response.status_code == 422
+    assert "verification" in response.json()["detail"].lower()
+
+
 def test_info_rejects_non_youtube_urls(client):
     assert client.post("/api/info", json={"url": "file:///etc/passwd"}).status_code == 422
 
