@@ -106,6 +106,7 @@ _source_writer: ContextVar[tuple[Callable[[Source], None], int] | None] = Contex
     "source_writer", default=None
 )
 log = logging.getLogger("clipper.media")
+ProgressCallback = Callable[[str, int | None], None]
 
 
 def _package_version(name: str) -> str | None:
@@ -602,6 +603,7 @@ def download_clip(
     out_dir: Path,
     source_lookup: Callable[[str], Source | None] | None = None,
     storage=None,
+    progress: ProgressCallback | None = None,
 ) -> Clip:
     """Download only the requested range, in the requested quality, as one MP4."""
     budget = media_timeout_seconds(spec.end - spec.start)
@@ -614,9 +616,23 @@ def download_clip(
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
     timeout_hook = _timeout_hook(deadline, budget)
+    def progress_hook(status: dict) -> None:
+        timeout_hook(status)
+        if progress is None:
+            return
+        if status.get("status") == "downloading":
+            total = status.get("total_bytes") or status.get("total_bytes_estimate")
+            downloaded = status.get("downloaded_bytes")
+            if total and downloaded is not None:
+                progress("downloading", 10 + round(60 * min(1, downloaded / total)))
+            else:
+                progress("downloading", None)
+        elif status.get("status") == "finished":
+            progress("merging", None)
+
     opts = _youtube_options({
         "socket_timeout": budget,
-        "progress_hooks": [timeout_hook],
+        "progress_hooks": [progress_hook],
         "postprocessor_hooks": [timeout_hook],
         # Keep the selected source at or below the requested resolution.  A
         # format_sort alone is only a preference and may choose a larger stream.

@@ -57,6 +57,49 @@ def test_fetch_info_retries_youtube_verification_with_fallback_client(monkeypatc
     assert calls[0]["js_runtimes"] == {"node": {}}
 
 
+def test_download_clip_reports_byte_progress(monkeypatch, tmp_path):
+    options = {}
+
+    class FakeYoutubeDL:
+        def __init__(self, received):
+            options.update(received)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            options["progress_hooks"][0](
+                {"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100}
+            )
+            options["progress_hooks"][0]({"status": "finished"})
+            return {
+                "title": "video",
+                "requested_downloads": [{"filepath": str(tmp_path / "clip.mp4")}],
+            }
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    progress = []
+    spec = make_clip_spec(
+        url="https://www.youtube.com/watch?v=video",
+        source_id=None,
+        start=0,
+        end=5,
+        quality=Quality(720),
+        mode=Mode.FAST,
+    )
+    result = media.download_clip(
+        spec,
+        tmp_path,
+        progress=lambda phase, percent: progress.append((phase, percent)),
+    )
+
+    assert result.title == "video"
+    assert progress == [("downloading", 40), ("merging", None)]
+
+
 def test_youtube_environment_diagnostics_excludes_runtime_paths(monkeypatch):
     monkeypatch.setattr(media, "_package_version", lambda name: "test-version")
     monkeypatch.setattr(

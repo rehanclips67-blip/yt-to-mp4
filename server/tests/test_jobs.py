@@ -54,6 +54,22 @@ def test_job_runs_to_completion(manager, gate):
     assert 0 < manager.expires_in(job) <= 60
 
 
+def test_job_passes_truthful_progress_to_runner(tmp_path):
+    def runner(spec, out_dir, progress):
+        progress("downloading", None)
+        progress("downloading", 40)
+        path = out_dir / "clip.mp4"
+        path.write_bytes(b"data")
+        return Clip(path, "Title")
+
+    manager = JobManager(runner, workers=1, root=tmp_path / "jobs")
+    job = manager.submit(SPEC, "client")
+    wait_for(job, JobStatus.DONE)
+
+    assert job.progress_known is True
+    assert job.percent == 100
+
+
 def test_old_persisted_job_restart_without_source_id(tmp_path):
     db_url = f"sqlite:///{tmp_path / 'jobs.db'}"
     repository = JobRepository(make_engine(db_url))

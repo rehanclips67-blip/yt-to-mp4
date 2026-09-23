@@ -67,6 +67,7 @@ class Job:
     clip: Clip | None = None
     phase: str = "queued"
     percent: int = 0
+    progress_known: bool = False
     download_refs: int = 0
     object_key: str | None = None
     result_size: int | None = None
@@ -494,6 +495,7 @@ class JobManager:
         self._speed: dict[tuple[int, Mode], float] = {}  # seconds of video cut per second of work
         self._lock = threading.Lock()
         self._runner_supports_sources = "source_lookup" in inspect.signature(self.runner).parameters
+        self._runner_supports_progress = "progress" in inspect.signature(self.runner).parameters
         self._repository = None
         if self.db_url:
             self._engine = make_engine(self.db_url)
@@ -681,6 +683,13 @@ class JobManager:
         job.phase, job.percent = "downloading", 10
         self._persist(job)
         attempts = 0
+        def update_progress(phase: str, percent: int | None) -> None:
+            job.phase = phase
+            if percent is None:
+                job.progress_known = False
+            else:
+                job.percent = max(job.percent, min(99, percent))
+                job.progress_known = True
         while True:
             if job.id in self._cancelled:
                 outcome = JobStatus.CANCELLED
@@ -689,16 +698,25 @@ class JobManager:
                 if self._repository:
                     with source_context(self._repository.add_source, self.ttl):
                         if self.source_lookup is not None and self._runner_supports_sources:
-                            clip = self.runner(
-                                job.spec,
-                                job.work_dir,
-                                source_lookup=self.source_lookup,
-                                storage=self.storage,
-                            )
+                            kwargs = {
+                                "source_lookup": self.source_lookup,
+                                "storage": self.storage,
+                            }
+                            if self._runner_supports_progress:
+                                kwargs["progress"] = update_progress
+                            clip = self.runner(job.spec, job.work_dir, **kwargs)
                         else:
-                            clip = self.runner(job.spec, job.work_dir)
+                            clip = (
+                                self.runner(job.spec, job.work_dir, progress=update_progress)
+                                if self._runner_supports_progress
+                                else self.runner(job.spec, job.work_dir)
+                            )
                 else:
-                    clip = self.runner(job.spec, job.work_dir)
+                    clip = (
+                        self.runner(job.spec, job.work_dir, progress=update_progress)
+                        if self._runner_supports_progress
+                        else self.runner(job.spec, job.work_dir)
+                    )
                 if self._repository:
                     source = (
                         self._repository.get_source_by_id(job.spec.source_id)
@@ -712,7 +730,7 @@ class JobManager:
                     shutil.rmtree(job.work_dir, ignore_errors=True)
                     outcome = JobStatus.CANCELLED
                     break
-                job.phase, job.percent = "complete", 100
+                job.phase, job.percent, job.progress_known = "complete", 100, True
                 if self.storage is not None:
                     stored = self.storage.upload(job.clip.path, f"clips/{job.id}/{job.filename}")
                     job.object_key, job.result_size = stored.key, stored.size

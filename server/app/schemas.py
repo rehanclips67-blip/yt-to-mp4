@@ -167,6 +167,7 @@ class JobOut(BaseModel):
     error: str | None = None
     phase: str = "queued"
     percent: int = Field(default=0, ge=0, le=100)
+    progress_known: bool = False
     filename: str | None = None  # the fields below are set once the clip is done
     size_bytes: int | None = None
     expires_in: int | None = None

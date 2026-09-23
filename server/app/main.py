@@ -705,6 +705,7 @@ def _view(job: Job) -> JobOut:
         error=job.error,
         phase=job.phase,
         percent=job.percent,
+        progress_known=job.progress_known,
     )
     if job.status is JobStatus.QUEUED:
         out.position = jobs.position(job)

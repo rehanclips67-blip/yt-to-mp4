@@ -78,6 +78,7 @@ export interface Job {
   estimate_seconds: number | null;
   phase: "queued" | "preparing" | "downloading" | "merging" | "cutting" | "packaging" | "complete";
   percent: number;
+  progress_known: boolean;
   error: string | null;
   filename: string | null;
   size_bytes: number | null;

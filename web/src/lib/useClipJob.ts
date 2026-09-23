@@ -15,7 +15,7 @@ export type JobView =
   | { stage: "idle" }
   | { stage: "starting" }
   | { stage: "queued"; position: number }
-  | { stage: "working"; elapsed: number; estimate: number | null; phase: Job["phase"]; percent: number }
+  | { stage: "working"; elapsed: number; estimate: number | null; phase: Job["phase"]; percent: number; progressKnown: boolean }
   | { stage: "done"; id: string; size: number; expiresIn: number }
   | { stage: "error"; message: string };
 
@@ -30,6 +30,7 @@ function progressOf(job: Job): JobView {
         estimate: job.estimate_seconds,
         phase: job.phase,
         percent: job.percent,
+        progressKnown: job.progress_known,
       };
 }
 

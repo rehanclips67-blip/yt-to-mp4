@@ -517,8 +517,8 @@ function Progress({ view }: { view: JobView }) {
         <div className={styles.fill} style={percent === null ? undefined : { width: `${percent}%` }} />
       </div>
       <p className={styles.note}>
-        {view.phase === "downloading" ? "Downloading source" : view.phase === "cutting" ? "Cutting clip" : "Preparing clip"}{" "}
-        <span className={styles.numeric}>{view.percent}%</span>
+        {view.phase === "downloading" ? "Downloading source" : view.phase === "merging" ? "Merging source" : view.phase === "cutting" ? "Cutting clip" : "Preparing clip"}{" "}
+        {view.progressKnown ? <><span className={styles.numeric}>{view.percent}%</span>{" - "}</> : " - "}
         {" - "}
         <span className={styles.numeric}>{formatClock(elapsed)}</span>
         {estimate ? <> - about <span className={styles.numeric}>{formatClock(estimate)}</span></> : null}
