@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from yt_dlp import YoutubeDL
-from yt_dlp.utils import download_range_func
+from yt_dlp.utils import YoutubeDLError, download_range_func
 
 from .formats import Quality
 from .models import Source, SourceType
@@ -79,6 +79,12 @@ class WhisperResourceError(RuntimeError):
 
 
 _BASE_OPTS = {"quiet": True, "no_warnings": True, "noplaylist": True}
+_VERIFICATION_MARKERS = (
+    "sign in to confirm",
+    "not a bot",
+    "confirm you're not a bot",
+    "http error 429",
+)
 
 # 4K encoding gets memory-hungry with many threads (and 32-bit FFmpeg builds run out at ~2 GB),
 # so cap the encoder and decoder threads. Raise these on a big machine if you want more speed.
@@ -105,6 +111,26 @@ _source_writer: ContextVar[tuple[Callable[[Source], None], int] | None] = Contex
     "source_writer", default=None
 )
 log = logging.getLogger("clipper.media")
+
+
+def _youtube_options(extra: dict | None = None, *, player_client: str | None = None) -> dict:
+    options = {**_BASE_OPTS, **(extra or {})}
+    cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
+    if cookies_file:
+        options["cookiefile"] = cookies_file
+    if player_client:
+        options["extractor_args"] = {"youtube": {"player_client": [player_client]}}
+    return options
+
+
+def _verification_fallback_clients() -> tuple[str, ...]:
+    configured = os.getenv("YOUTUBE_PLAYER_CLIENTS", "web_safari,android_vr")
+    return tuple(client.strip() for client in configured.split(",") if client.strip())
+
+
+def _is_youtube_verification_error(error: Exception) -> bool:
+    detail = str(error).lower()
+    return any(marker in detail for marker in _VERIFICATION_MARKERS)
 
 
 @contextmanager
@@ -273,8 +299,28 @@ def _timeout_hook(deadline: float, budget: float):
 def fetch_info(url: str) -> dict:
     """Read metadata and the available formats without downloading anything."""
     validate_primary_url(url)
-    with YoutubeDL({**_BASE_OPTS, "skip_download": True}) as ydl:
-        return ydl.extract_info(url, download=False)
+    options = _youtube_options({"skip_download": True})
+    try:
+        with YoutubeDL(options) as ydl:
+            return ydl.extract_info(url, download=False)
+    except YoutubeDLError as error:
+        if not _is_youtube_verification_error(error):
+            raise
+        log.warning("YouTube verification blocked the default client for %s", url)
+        for player_client in _verification_fallback_clients():
+            try:
+                with YoutubeDL(
+                    _youtube_options({"skip_download": True}, player_client=player_client)
+                ) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except YoutubeDLError:
+                log.warning(
+                    "YouTube fallback client %s failed for %s",
+                    player_client,
+                    url,
+                    exc_info=True,
+                )
+        raise
 
 
 def fetch_transcript(url: str) -> list[dict] | None:
@@ -319,14 +365,13 @@ def fetch_whisper_transcript(
         source = str(Path(directory) / "audio.%(ext)s")
         budget = media_timeout_seconds(duration)
         with YoutubeDL(
-            {
-                **_BASE_OPTS,
+            _youtube_options({
                 "socket_timeout": budget,
                 "progress_hooks": [_timeout_hook(time.monotonic() + budget, budget)],
                 "format": "bestaudio/best",
                 "outtmpl": source,
                 "max_filesize": int(os.getenv("WHISPER_MAX_BYTES", str(100 * 1024 * 1024))),
-            }
+            })
         ) as ydl:
             info = ydl.extract_info(url, download=True)
             audio = Path(ydl.prepare_filename(info))
@@ -517,8 +562,7 @@ def download_clip(
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
     timeout_hook = _timeout_hook(deadline, budget)
-    opts = {
-        **_BASE_OPTS,
+    opts = _youtube_options({
         "socket_timeout": budget,
         "progress_hooks": [timeout_hook],
         "postprocessor_hooks": [timeout_hook],
@@ -533,7 +577,7 @@ def download_clip(
         "download_ranges": download_range_func(None, [(spec.start, spec.end)]),
         "outtmpl": str(out_dir / "clip.%(ext)s"),
         "max_filesize": _max_download_bytes(),
-    }
+    })
     if spec.mode is Mode.EXACT:
         opts["force_keyframes_at_cuts"] = True
         opts["external_downloader_args"] = {
@@ -576,8 +620,7 @@ def download_export(
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
     timeout_hook = _timeout_hook(deadline, budget)
-    opts = {
-        **_BASE_OPTS,
+    opts = _youtube_options({
         "socket_timeout": budget,
         "progress_hooks": [timeout_hook],
         "postprocessor_hooks": [timeout_hook],
@@ -589,7 +632,7 @@ def download_export(
         "merge_output_format": "mp4",
         "outtmpl": str(source_dir / "source.%(ext)s"),
         "max_filesize": _max_download_bytes(),
-    }
+    })
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(first.url, download=True)
         source = Path(ydl.prepare_filename(info))

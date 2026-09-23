@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+import app.media as media
 from app.formats import Quality
 from app.jobs import JobManager, JobStatus
 from app.media import (
@@ -23,12 +24,36 @@ from app.media import (
     _run_ffmpeg,
     _timeout_hook,
     download_clip,
+    fetch_info,
     make_clip_spec,
     media_timeout_seconds,
     validate_primary_url,
 )
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+
+
+def test_fetch_info_retries_youtube_verification_with_fallback_client(monkeypatch):
+    calls = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            calls.append(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            if len(calls) == 1:
+                raise media.YoutubeDLError("Sign in to confirm you're not a bot")
+            return {"id": "video", "duration": 10}
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    assert fetch_info("https://www.youtube.com/watch?v=video")["id"] == "video"
+    assert calls[1]["extractor_args"] == {"youtube": {"player_client": ["web_safari"]}}
 
 
 @pytest.fixture(scope="module")
