@@ -54,6 +54,26 @@ def test_fetch_info_retries_youtube_verification_with_fallback_client(monkeypatc
     monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
     assert fetch_info("https://www.youtube.com/watch?v=video")["id"] == "video"
     assert calls[1]["extractor_args"] == {"youtube": {"player_client": ["web_safari"]}}
+    assert calls[0]["js_runtimes"] == {"node": {}}
+
+
+def test_youtube_environment_diagnostics_excludes_runtime_paths(monkeypatch):
+    monkeypatch.setattr(media, "_package_version", lambda name: "test-version")
+    monkeypatch.setattr(
+        media,
+        "_runtime_version",
+        lambda command, args: "v24.17.0" if command == "node" else None,
+    )
+
+    diagnostics = media.youtube_environment_diagnostics()
+
+    assert diagnostics == {
+        "yt_dlp_version": "test-version",
+        "yt_dlp_ejs_version": "test-version",
+        "js_runtimes": {"node": "v24.17.0"},
+        "configured_js_runtime": "node",
+        "configured_player_clients": ("web_safari", "android_vr"),
+    }
 
 
 @pytest.fixture(scope="module")

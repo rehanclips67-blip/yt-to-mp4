@@ -1,6 +1,7 @@
 """yt-dlp wrapper: read video info and download a trimmed clip."""
 
 import html
+import importlib.metadata
 import importlib.util
 import ipaddress
 import json
@@ -18,6 +19,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from shutil import which
 from typing import NamedTuple
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -79,13 +81,6 @@ class WhisperResourceError(RuntimeError):
 
 
 _BASE_OPTS = {"quiet": True, "no_warnings": True, "noplaylist": True}
-_VERIFICATION_MARKERS = (
-    "sign in to confirm",
-    "not a bot",
-    "confirm you're not a bot",
-    "http error 429",
-)
-
 # 4K encoding gets memory-hungry with many threads (and 32-bit FFmpeg builds run out at ~2 GB),
 # so cap the encoder and decoder threads. Raise these on a big machine if you want more speed.
 _DECODE_THREADS = "2"
@@ -113,8 +108,64 @@ _source_writer: ContextVar[tuple[Callable[[Source], None], int] | None] = Contex
 log = logging.getLogger("clipper.media")
 
 
+def _package_version(name: str) -> str | None:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _runtime_version(command: str, args: tuple[str, ...]) -> str | None:
+    if which(command) is None:
+        return None
+    try:
+        result = subprocess.run(
+            [command, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = (result.stdout or result.stderr).splitlines()
+    return output[0].strip()[:80] if output else None
+
+
+def youtube_environment_diagnostics() -> dict[str, object]:
+    runtimes = {
+        "node": _runtime_version("node", ("--version",)),
+        "deno": _runtime_version("deno", ("--version",)),
+        "bun": _runtime_version("bun", ("--version",)),
+        "quickjs": _runtime_version("qjs", ("--version",)),
+    }
+    return {
+        "yt_dlp_version": _package_version("yt-dlp"),
+        "yt_dlp_ejs_version": _package_version("yt-dlp-ejs"),
+        "js_runtimes": {name: version for name, version in runtimes.items() if version},
+        "configured_js_runtime": "node",
+        "configured_player_clients": _verification_fallback_clients(),
+    }
+
+
+def _youtube_error_category(error: Exception) -> str:
+    detail = str(error).lower()
+    if "sign in to confirm" in detail or "not a bot" in detail:
+        return "verification"
+    if "private video" in detail or "sign in" in detail:
+        return "authentication_or_private"
+    if "age-restricted" in detail or "confirm your age" in detail:
+        return "age_restricted"
+    if "video unavailable" in detail or "not available" in detail:
+        return "unavailable"
+    if "429" in detail or "too many requests" in detail:
+        return "rate_limited"
+    return "extraction_failure"
+
+
 def _youtube_options(extra: dict | None = None, *, player_client: str | None = None) -> dict:
     options = {**_BASE_OPTS, **(extra or {})}
+    options["js_runtimes"] = {"node": {}}
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
     if cookies_file:
         options["cookiefile"] = cookies_file
@@ -129,8 +180,7 @@ def _verification_fallback_clients() -> tuple[str, ...]:
 
 
 def _is_youtube_verification_error(error: Exception) -> bool:
-    detail = str(error).lower()
-    return any(marker in detail for marker in _VERIFICATION_MARKERS)
+    return _youtube_error_category(error) in {"verification", "rate_limited"}
 
 
 @contextmanager
@@ -306,19 +356,21 @@ def fetch_info(url: str) -> dict:
     except YoutubeDLError as error:
         if not _is_youtube_verification_error(error):
             raise
-        log.warning("YouTube verification blocked the default client for %s", url)
+        log.warning(
+            "YouTube extraction failed with category=%s; trying fallback clients",
+            _youtube_error_category(error),
+        )
         for player_client in _verification_fallback_clients():
             try:
                 with YoutubeDL(
                     _youtube_options({"skip_download": True}, player_client=player_client)
                 ) as ydl:
                     return ydl.extract_info(url, download=False)
-            except YoutubeDLError:
+            except YoutubeDLError as fallback_error:
                 log.warning(
-                    "YouTube fallback client %s failed for %s",
+                    "YouTube fallback client=%s failed with category=%s",
                     player_client,
-                    url,
-                    exc_info=True,
+                    _youtube_error_category(fallback_error),
                 )
         raise
 

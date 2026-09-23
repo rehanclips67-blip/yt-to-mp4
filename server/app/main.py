@@ -33,6 +33,7 @@ from .limits import max_clip_seconds
 from .media import (
     Mode,
     PrimaryUrlError,
+    _youtube_error_category,
     download_clip,
     download_export,
     fetch_info,
@@ -41,6 +42,7 @@ from .media import (
     make_clip_spec,
     validate_primary_url,
     whisper_is_configured,
+    youtube_environment_diagnostics,
 )
 from .models import Source, SourceType
 from .rate_limit import RateLimitDecision, make_rate_limiter
@@ -113,18 +115,26 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+log.info("YouTube extraction environment: %s", youtube_environment_diagnostics())
+
 
 def _youtube_info_error(error: YoutubeDLError) -> str:
     detail = str(error).lower()
     if "sign in to confirm" in detail or "not a bot" in detail:
-        return "YouTube requires verification for this video. Try again later or upload the video instead."
+        return (
+            "YouTube requires verification for this video. "
+            "Try again later or upload the video instead."
+        )
     if "private video" in detail or "sign in" in detail:
         return "This video is private or requires a YouTube login."
     if "age-restricted" in detail or "confirm your age" in detail:
         return "This video is age-restricted and cannot be read without YouTube verification."
     if "video unavailable" in detail or "not available" in detail:
         return "This video is unavailable to the server. Check its visibility and try again."
-    return "YouTube could not provide this video's metadata. Try again later or upload the video instead."
+    return (
+        "YouTube could not provide this video's metadata. "
+        "Try again later or upload the video instead."
+    )
 
 
 resource_guard = ResourceGuard()
@@ -428,7 +438,7 @@ def info(req: InfoRequest) -> InfoResponse:
     except PrimaryUrlError as e:
         raise HTTPException(422, str(e)) from e
     except YoutubeDLError as e:
-        log.warning("info failed for %s: %s", req.url, e)
+        log.warning("info failed with category=%s", _youtube_error_category(e))
         raise HTTPException(422, _youtube_info_error(e)) from e
 
     if not raw.get("duration"):
