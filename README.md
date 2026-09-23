@@ -7,6 +7,20 @@ server/   Python API (FastAPI + yt-dlp + FFmpeg)   <- this milestone
 web/      Frontend (Next.js + TypeScript)
 ```
 
+## Admin YouTube diagnostic
+
+Set `ADMIN_TOKEN` on the backend before using the restricted diagnostic endpoint. It accepts one validated YouTube URL and returns sanitized extraction diagnostics only:
+
+```sh
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -d '{"url":"https://youtu.be/u2uLI2x405c"}' \
+  https://<backend-host>/api/admin/youtube-diagnostic
+```
+
+The endpoint is intended for administrators and must not be exposed with the token in client-side code.
+
 ## Run it
 
 Two terminals: the server, then the web app.

@@ -146,7 +146,40 @@ def test_info_diagnostic_log_does_not_include_raw_youtube_error(client, monkeypa
     assert response.status_code == 422
     assert secret_url not in caplog.text
     assert "secret-token" not in caplog.text
-    assert "category=verification" in caplog.text
+    assert "class=bot_check" in caplog.text
+
+
+def test_youtube_diagnostic_requires_admin_token(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    assert client.post("/api/admin/youtube-diagnostic", json={"url": URL}).status_code == 403
+
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-secret")
+    assert client.post(
+        "/api/admin/youtube-diagnostic",
+        json={"url": URL},
+        headers={"X-Admin-Token": "wrong"},
+    ).status_code == 403
+
+
+def test_youtube_diagnostic_returns_sanitized_result(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setattr(
+        main,
+        "diagnose_youtube",
+        lambda url: {
+            "error_class": "bot_check",
+            "player_client": "default",
+            "environment": {"yt_dlp_version": "test"},
+            "messages": ["ERROR: [url] token=[redacted]"],
+        },
+    )
+    response = client.post(
+        "/api/admin/youtube-diagnostic",
+        json={"url": URL},
+        headers={"X-Admin-Token": "admin-secret"},
+    )
+    assert response.status_code == 200
+    assert response.json()["error_class"] == "bot_check"
 
 
 def test_info_rejects_non_youtube_urls(client):

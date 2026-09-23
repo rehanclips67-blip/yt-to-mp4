@@ -33,6 +33,32 @@ from app.media import (
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Sign in to confirm you're not a bot", "bot_check"),
+        ("JavaScript challenge failed", "js_challenge"),
+        ("certificate verify failed: SSL", "ssl"),
+        ("This is a private video; sign in", "age_or_login"),
+        ("Video unavailable in your region", "region_or_unavailable"),
+        ("HTTP Error 429: Too Many Requests", "network"),
+        ("unexpected extractor failure", "other"),
+    ],
+)
+def test_youtube_error_categories(message, expected):
+    assert media._youtube_error_category(Exception(message)) == expected
+
+
+def test_sanitize_log_message_removes_url_credentials_and_paths():
+    message = media._sanitize_log_message(
+        "https://example.test/video?token=secret C:\\private\\cookie.txt "
+        "Authorization: Bearer secret"
+    )
+    assert "example.test" not in message
+    assert "secret" not in message
+    assert "private" not in message
+
+
 def test_fetch_info_retries_youtube_verification_with_fallback_client(monkeypatch):
     calls = []
 

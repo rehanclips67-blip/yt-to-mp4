@@ -149,19 +149,48 @@ def youtube_environment_diagnostics() -> dict[str, object]:
     }
 
 
+def _sanitize_log_message(value: object) -> str:
+    message = re.sub(r"(?i)\b(?:https?|ftp)://\S+", "[url]", str(value))
+    message = re.sub(r"(?i)\b(?:bearer|basic)\s+\S+", "[credential]", message)
+    message = re.sub(
+        r"(?i)\b(authorization|cookie|token|password|proxy)[^\s:=]*\s*[:=]\s*\S+",
+        r"\1=[redacted]",
+        message,
+    )
+    message = re.sub(r"(?<!\w)(?:[A-Za-z]:)?[\\/](?:[^ \t]+)", "[path]", message)
+    return re.sub(r"\s+", " ", message).strip()[:240]
+
+
 def _youtube_error_category(error: Exception) -> str:
     detail = str(error).lower()
     if "sign in to confirm" in detail or "not a bot" in detail:
-        return "verification"
-    if "private video" in detail or "sign in" in detail:
-        return "authentication_or_private"
-    if "age-restricted" in detail or "confirm your age" in detail:
-        return "age_restricted"
-    if "video unavailable" in detail or "not available" in detail:
-        return "unavailable"
-    if "429" in detail or "too many requests" in detail:
-        return "rate_limited"
-    return "extraction_failure"
+        return "bot_check"
+    if "javascript" in detail or "js challenge" in detail or "challenge" in detail:
+        return "js_challenge"
+    if "ssl" in detail or "certificate verify failed" in detail:
+        return "ssl"
+    if (
+        "age-restricted" in detail
+        or "confirm your age" in detail
+        or "private video" in detail
+        or "sign in" in detail
+    ):
+        return "age_or_login"
+    if (
+        "video unavailable" in detail
+        or "not available" in detail
+        or "geo" in detail
+        or "region" in detail
+    ):
+        return "region_or_unavailable"
+    if (
+        "429" in detail
+        or "too many requests" in detail
+        or "timed out" in detail
+        or "connection" in detail
+    ):
+        return "network"
+    return "other"
 
 
 def _youtube_options(extra: dict | None = None, *, player_client: str | None = None) -> dict:
@@ -181,7 +210,50 @@ def _verification_fallback_clients() -> tuple[str, ...]:
 
 
 def _is_youtube_verification_error(error: Exception) -> bool:
-    return _youtube_error_category(error) in {"verification", "rate_limited"}
+    detail = str(error).lower()
+    return (
+        "sign in to confirm" in detail
+        or "not a bot" in detail
+        or "http error 429" in detail
+    )
+
+
+class _DiagnosticLogger:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def debug(self, message: str) -> None:
+        self.messages.append(_sanitize_log_message(message))
+
+    def warning(self, message: str) -> None:
+        self.messages.append(_sanitize_log_message(message))
+
+    def error(self, message: str) -> None:
+        self.messages.append(_sanitize_log_message(message))
+
+
+def diagnose_youtube(url: str) -> dict[str, object]:
+    validate_primary_url(url)
+    logger = _DiagnosticLogger()
+    options = _youtube_options({"skip_download": True, "verbose": True, "logger": logger})
+    player_client = (options.get("extractor_args") or {}).get("youtube", {}).get(
+        "player_client", ["default"]
+    )[0]
+    result: dict[str, object] = {
+        "error_class": None,
+        "player_client": player_client,
+        "environment": youtube_environment_diagnostics(),
+        "messages": [],
+    }
+    try:
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+        result["format_count"] = len(info.get("formats") or [])
+    except YoutubeDLError as error:
+        result["error_class"] = _youtube_error_category(error)
+        logger.error(error)
+    result["messages"] = [message for message in logger.messages if message][:40]
+    return result
 
 
 @contextmanager
@@ -222,7 +294,7 @@ def _create_source(info: dict, path: Path, url: str) -> None:
             )
         )
     except Exception:
-        log.warning("source persistence failed for %s", url, exc_info=True)
+        log.warning("source persistence failed for YouTube source")
 
 
 def _max_download_bytes() -> int:

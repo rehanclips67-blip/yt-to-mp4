@@ -21,7 +21,15 @@ from yt_dlp.utils import YoutubeDLError
 
 from .db import create_db_and_tables, make_engine
 from .formats import Quality
-from .media import Clip, ClipSpec, Mode, make_clip_spec, source_context
+from .media import (
+    Clip,
+    ClipSpec,
+    Mode,
+    _sanitize_log_message,
+    _youtube_error_category,
+    make_clip_spec,
+    source_context,
+)
 from .models import JobRecord
 from .queue import make_queue
 from .repository import JobRepository
@@ -454,7 +462,7 @@ class TranscriptJobManager:
             job.error = "The transcription timed out."
             job.status = JobStatus.FAILED
         except Exception as exc:
-            log.warning("transcription failed: %s", exc)
+            log.warning("transcription failed message=%s", _sanitize_log_message(exc))
             job.error = str(exc) or "Whisper transcription failed."
             job.status = JobStatus.FAILED
         finally:
@@ -737,7 +745,7 @@ class JobManager:
                 outcome = JobStatus.DONE
                 break
             except TimeoutError as e:
-                log.warning("clip timed out for %s: %s", job.spec.url, e)
+                log.warning("clip timed out message=%s", _sanitize_log_message(e))
                 job.error = "The media operation timed out. Try a shorter range or lower quality."
                 shutil.rmtree(job.work_dir, ignore_errors=True)
                 outcome = JobStatus.CANCELLED if job.id in self._cancelled else JobStatus.FAILED
@@ -749,10 +757,18 @@ class JobManager:
                     time.sleep(self.retry_backoff * (2 ** (attempts - 1)))
                     continue
                 if transient:
-                    log.warning("clip failed for %s: %s", job.spec.url, e)
+                    log.warning(
+                        "clip failed class=%s message=%s",
+                        _youtube_error_category(e),
+                        _sanitize_log_message(e),
+                    )
                     job.error = "Couldn't download that clip. Try another quality."
                 else:
-                    log.exception("unexpected failure for %s", job.spec.url)
+                    log.error(
+                        "unexpected failure class=%s message=%s",
+                        _youtube_error_category(e),
+                        _sanitize_log_message(e),
+                    )
                     job.error = "Something went wrong on our side."
                 shutil.rmtree(job.work_dir, ignore_errors=True)
                 outcome = JobStatus.CANCELLED if job.id in self._cancelled else JobStatus.FAILED

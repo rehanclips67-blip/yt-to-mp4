@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from starlette.background import BackgroundTask
@@ -33,7 +33,9 @@ from .limits import max_clip_seconds
 from .media import (
     Mode,
     PrimaryUrlError,
+    _sanitize_log_message,
     _youtube_error_category,
+    diagnose_youtube,
     download_clip,
     download_export,
     fetch_info,
@@ -115,7 +117,13 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-log.info("YouTube extraction environment: %s", youtube_environment_diagnostics())
+_youtube_diag = youtube_environment_diagnostics()
+log.info(
+    "YouTube extraction environment yt_dlp=%s yt_dlp_ejs=%s node=%s",
+    _youtube_diag["yt_dlp_version"],
+    _youtube_diag["yt_dlp_ejs_version"],
+    (_youtube_diag["js_runtimes"] or {}).get("node"),
+)
 
 
 def _youtube_info_error(error: YoutubeDLError) -> str:
@@ -438,7 +446,11 @@ def info(req: InfoRequest) -> InfoResponse:
     except PrimaryUrlError as e:
         raise HTTPException(422, str(e)) from e
     except YoutubeDLError as e:
-        log.warning("info failed with category=%s", _youtube_error_category(e))
+        log.warning(
+            "info failed class=%s message=%s",
+            _youtube_error_category(e),
+            _sanitize_log_message(e),
+        )
         raise HTTPException(422, _youtube_info_error(e)) from e
 
     if not raw.get("duration"):
@@ -467,6 +479,23 @@ def info(req: InfoRequest) -> InfoResponse:
     )
 
 
+@app.post("/api/admin/youtube-diagnostic")
+def youtube_diagnostic(
+    req: InfoRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> dict[str, object]:
+    expected = os.getenv("ADMIN_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(403, "Forbidden.")
+    if x_admin_token is None or not secrets.compare_digest(x_admin_token, expected):
+        raise HTTPException(403, "Forbidden.")
+    try:
+        validate_primary_url(req.url)
+        return diagnose_youtube(req.url)
+    except PrimaryUrlError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.post("/api/transcript")
 def transcript(req: TranscriptRequest, request: Request, response: Response):
     try:
@@ -475,10 +504,14 @@ def transcript(req: TranscriptRequest, request: Request, response: Response):
     except PrimaryUrlError as e:
         raise HTTPException(422, str(e)) from e
     except YoutubeDLError as e:
-        log.warning("transcript failed for %s: %s", req.url, e)
+        log.warning(
+            "transcript failed class=%s message=%s",
+            _youtube_error_category(e),
+            _sanitize_log_message(e),
+        )
         return TranscriptResponse(available=False, reason="captions_unavailable")
     except (OSError, ValueError) as e:
-        log.warning("caption read failed for %s: %s", req.url, e)
+        log.warning("caption read failed message=%s", _sanitize_log_message(e))
         return TranscriptResponse(available=False, reason="captions_unavailable")
     if not segments:
         if not req.fallback_whisper:
