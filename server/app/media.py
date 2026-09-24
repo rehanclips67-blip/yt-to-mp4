@@ -110,6 +110,9 @@ log = logging.getLogger("clipper.media")
 ProgressCallback = Callable[[str, int | None], None]
 _INFO_CACHE_TTL_SECONDS = 10.0
 _INFO_CACHE_MAX_ENTRIES = 128
+_DURATION_CACHE_TTL_SECONDS = 900.0
+_DURATION_CACHE_MAX_ENTRIES = 1024
+_duration_cache: dict[str, tuple[float, float]] = {}
 _info_cache_lock = threading.Lock()
 _info_cache: dict[str, "_InfoCacheEntry"] = {}
 
@@ -139,6 +142,56 @@ def _normalized_info_url(url: str) -> str:
 def _clear_info_cache() -> None:
     with _info_cache_lock:
         _info_cache.clear()
+        _duration_cache.clear()
+
+
+def _video_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host == "youtu.be":
+        return parsed.path.strip("/").split("/", 1)[0] or None
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        return parse_qs(parsed.query).get("v", [None])[0]
+    return None
+
+
+def get_cached_youtube_duration(url: str) -> float | None:
+    video_id = _video_id(url)
+    if not video_id:
+        return None
+    with _info_cache_lock:
+        cached = _duration_cache.get(video_id)
+        if cached is None:
+            return None
+        duration, expires_at = cached
+        if expires_at <= time.monotonic():
+            del _duration_cache[video_id]
+            return None
+        return duration
+
+
+def _cache_youtube_duration(url: str, info: dict) -> None:
+    video_id = _video_id(url)
+    duration = info.get("duration")
+    if not video_id or duration is None:
+        return
+    with _info_cache_lock:
+        now = time.monotonic()
+        for cached_id, (_, expires_at) in list(_duration_cache.items()):
+            if expires_at <= now:
+                del _duration_cache[cached_id]
+        while len(_duration_cache) >= _DURATION_CACHE_MAX_ENTRIES:
+            del _duration_cache[min(_duration_cache, key=lambda item: _duration_cache[item][1])]
+        _duration_cache[video_id] = (
+            float(duration),
+            now
+            + float(
+                os.getenv(
+                    "YOUTUBE_DURATION_CACHE_TTL_SECONDS",
+                    str(int(_DURATION_CACHE_TTL_SECONDS)),
+                )
+            ),
+        )
 
 
 def _evict_info_cache_entries(now: float) -> None:
@@ -509,14 +562,14 @@ def fetch_info(url: str) -> dict:
             entry.expires_at = time.monotonic() + _INFO_CACHE_TTL_SECONDS
             entry.in_flight = False
             entry.event.set()
+    _cache_youtube_duration(url, result)
     return result
 
 
 def _fetch_info_uncached(url: str) -> dict:
     options = _youtube_options({"skip_download": True})
     try:
-        with YoutubeDL(options) as ydl:
-            return ydl.extract_info(url, download=False)
+        return _extract_with_bot_retry(url, options)
     except YoutubeDLError as error:
         if not _is_youtube_verification_error(error):
             raise
@@ -537,6 +590,33 @@ def _fetch_info_uncached(url: str) -> dict:
                     _youtube_error_category(fallback_error),
                 )
         raise
+
+
+def _extract_with_bot_retry(url: str, options: dict) -> dict:
+    for attempt in range(2):
+        try:
+            with YoutubeDL(options) as ydl:
+                return ydl.extract_info(url, download=False)
+        except YoutubeDLError as error:
+            if attempt == 1 or not _is_youtube_verification_error(error):
+                raise
+            time.sleep(2.5)
+    raise RuntimeError("Metadata extraction ended without a result.")
+
+
+def _download_with_bot_retry(url: str, options: dict) -> tuple[dict, Path]:
+    for attempt in range(2):
+        try:
+            with YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=True)
+                requested = info.get("requested_downloads") or []
+                path = requested[0].get("filepath") if requested else None
+                return info, Path(path) if path else Path(ydl.prepare_filename(info))
+        except YoutubeDLError as error:
+            if attempt == 1 or not _is_youtube_verification_error(error):
+                raise
+            time.sleep(2.5)
+    raise RuntimeError("Download ended without a result.")
 
 
 def fetch_transcript(url: str) -> list[dict] | None:
@@ -816,8 +896,7 @@ def download_clip(
             "ffmpeg_o": _EXACT_ENCODE_ARGS,
         }
 
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(spec.url, download=True)
+    info, _prepared = _download_with_bot_retry(spec.url, opts)
     path = Path(info["requested_downloads"][0]["filepath"])
     _create_source(info, path, spec.url)
     return Clip(path, info["title"])
@@ -864,12 +943,10 @@ def download_export(
         "outtmpl": str(source_dir / "source.%(ext)s"),
         "max_filesize": _max_download_bytes(),
     })
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(first.url, download=True)
-        source = Path(ydl.prepare_filename(info))
-        if source.suffix != ".mp4":
-            candidate = source.with_suffix(".mp4")
-            if candidate.exists():
-                source = candidate
+    info, source = _download_with_bot_retry(first.url, opts)
+    if source.suffix != ".mp4":
+        candidate = source.with_suffix(".mp4")
+        if candidate.exists():
+            source = candidate
     _create_source(info, source, first.url)
     return _cut_ranges(specs, source, out_dir, deadline, budget, info["title"])

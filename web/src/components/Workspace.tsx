@@ -38,9 +38,12 @@ interface Props {
   info: VideoInfo;
   url: string;
   sourceId?: string;
+  onSwitchToUpload?: () => void;
 }
 
-export function Workspace({ info, url, sourceId }: Props) {
+const VERIFICATION_ERROR = "YouTube requires verification for this video. Try again later or upload the video instead.";
+
+export function Workspace({ info, url, sourceId, onSwitchToUpload }: Props) {
   const isUpload = Boolean(sourceId);
   const { mountRef, time, playing, muted, started, seekTo, play, pause, toggleMute } = useYouTubePlayer(isUpload ? null : info.id);
   const [quality, setQuality] = useState(info.qualities[0]);
@@ -487,9 +490,14 @@ export function Workspace({ info, url, sourceId }: Props) {
               </button>
               <Progress view={view} />
               {view.stage === "error" && (
-                <p role="alert" className={styles.error}>
-                  {view.message}
-                </p>
+                <>
+                  <p role="alert" className={styles.error}>{view.message}</p>
+                  {view.message === VERIFICATION_ERROR && onSwitchToUpload && (
+                    <button type="button" className="btn btn-small" onClick={onSwitchToUpload}>
+                      Upload video instead
+                    </button>
+                  )}
+                </>
               )}
             </>
           )}

@@ -10,6 +10,8 @@ type State =
   | { status: "error"; message: string }
   | { status: "ready"; url: string; info: VideoInfo; sourceId?: string };
 
+const VERIFICATION_ERROR = "YouTube requires verification for this video. Try again later or upload the video instead.";
+
 export function Tool() {
   const [state, setState] = useState<State>({ status: "idle" });
   const [validationHint, setValidationHint] = useState("");
@@ -81,7 +83,16 @@ export function Tool() {
 
       <main className={styles.main}>
         {state.status === "ready" ? (
-          <Workspace key={state.info.id} info={state.info} url={state.url} sourceId={state.sourceId} />
+          <Workspace
+            key={state.info.id}
+            info={state.info}
+            url={state.url}
+            sourceId={state.sourceId}
+            onSwitchToUpload={() => {
+              setState({ status: "idle" });
+              setInputMode("upload");
+            }}
+          />
         ) : (
           <section className={styles.landingHero} aria-label="Load a video">
             <div className={styles.heroContent}>
@@ -168,7 +179,23 @@ export function Tool() {
                   <div className={styles.loadingLine} aria-hidden />
                 </div>
               )}
-              {state.status === "error" && <p role="alert" className={styles.error}>{state.message}</p>}
+              {state.status === "error" && (
+                <>
+                  <p role="alert" className={styles.error}>{state.message}</p>
+                  {state.message === VERIFICATION_ERROR && (
+                    <button
+                      type="button"
+                      className="btn btn-small"
+                      onClick={() => {
+                        setState({ status: "idle" });
+                        setInputMode("upload");
+                      }}
+                    >
+                      Upload video instead
+                    </button>
+                  )}
+                </>
+              )}
             </div>
             <ClippingPreview />
           </section>

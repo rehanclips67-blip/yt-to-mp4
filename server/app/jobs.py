@@ -482,6 +482,7 @@ class JobManager:
     retry_backoff: float = 0.5
     cleanup_grace: int = 0
     metadata_fetcher: Callable[[str], dict] | None = None
+    duration_lookup: Callable[[str], float | None] | None = None
     storage: ObjectStorage | None = None
     resources: ResourceGuard | None = None
     source_lookup: Callable[[str], object | None] | None = None
@@ -595,8 +596,14 @@ class JobManager:
         if source is not None:
             duration = source.duration_seconds
         elif spec.url is not None and self.metadata_fetcher is not None:
-            metadata = self.metadata_fetcher(spec.url)
-            duration = metadata.get("duration")
+            duration = (
+                self.duration_lookup(spec.url)
+                if self.duration_lookup is not None
+                else None
+            )
+            if duration is None:
+                metadata = self.metadata_fetcher(spec.url)
+                duration = metadata.get("duration")
         else:
             return
         if duration is None:

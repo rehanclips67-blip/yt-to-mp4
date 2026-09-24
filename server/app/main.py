@@ -41,6 +41,7 @@ from .media import (
     fetch_info,
     fetch_transcript,
     fetch_whisper_transcript,
+    get_cached_youtube_duration,
     make_clip_spec,
     validate_primary_url,
     whisper_is_configured,
@@ -156,6 +157,7 @@ jobs = JobManager(
     queue_adapter=os.getenv("QUEUE_BACKEND", os.getenv("QUEUE_ADAPTER", "thread")),
     cleanup_grace=int(os.getenv("CLEANUP_GRACE_SECONDS", "300")),
     metadata_fetcher=fetch_info,
+    duration_lookup=get_cached_youtube_duration,
     storage=configured_storage,
     source_lookup=None,
     resources=resource_guard,
@@ -556,6 +558,12 @@ def create_job(req: ClipRequest, request: Request) -> JobOut:
             validate_primary_url(req.url)
         jobs.validate_duration(spec)
     except YoutubeDLError as e:
+        if _youtube_error_category(e) == "bot_check":
+            raise HTTPException(
+                422,
+                "YouTube requires verification for this video. "
+                "Try again later or upload the video instead.",
+            ) from e
         raise HTTPException(422, "Couldn't read the source duration.") from e
     except (OSError, ValueError) as e:
         raise HTTPException(422, str(e)) from e

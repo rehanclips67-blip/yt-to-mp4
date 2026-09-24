@@ -134,6 +134,27 @@ def test_validate_duration_uses_upload_source_id_without_url_lookup(tmp_path):
     manager.validate_duration(spec)
 
 
+def test_validate_duration_uses_cached_youtube_duration_before_metadata_fetch(tmp_path):
+    calls = []
+    manager = JobManager(
+        lambda spec, out_dir: None,
+        root=tmp_path / "jobs",
+        metadata_fetcher=lambda url: calls.append(url) or {"duration": 99},
+        duration_lookup=lambda url: 10,
+    )
+    spec = make_clip_spec(
+        url="https://youtu.be/cached",
+        source_id=None,
+        start=0,
+        end=10,
+        quality=Quality(720),
+        mode=Mode.FAST,
+    )
+
+    manager.validate_duration(spec)
+    assert calls == []
+
+
 def test_waiting_jobs_report_their_place_in_line(manager, gate):
     first = manager.submit(SPEC, "a")
     wait_for(first, JobStatus.WORKING)

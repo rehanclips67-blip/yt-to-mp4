@@ -74,13 +74,13 @@ def test_fetch_info_retries_youtube_verification_with_fallback_client(monkeypatc
             return False
 
         def extract_info(self, url, download):
-            if len(calls) == 1:
+            if len(calls) <= 2:
                 raise media.YoutubeDLError("Sign in to confirm you're not a bot")
             return {"id": "video", "duration": 10}
 
     monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
     assert fetch_info("https://www.youtube.com/watch?v=video")["id"] == "video"
-    assert calls[1]["extractor_args"] == {"youtube": {"player_client": ["web_safari"]}}
+    assert calls[2]["extractor_args"] == {"youtube": {"player_client": ["web_safari"]}}
     assert calls[0]["js_runtimes"] == {"node": {}}
 
 
@@ -105,6 +105,65 @@ def test_fetch_info_does_not_fallback_on_rate_limit(monkeypatch):
     with pytest.raises(media.YoutubeDLError, match="429"):
         media.fetch_info("https://www.youtube.com/watch?v=rate-limit")
     assert len(calls) == 1
+
+
+def test_fetch_info_retries_bot_check_once(monkeypatch):
+    media._clear_info_cache()
+    calls = 0
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            nonlocal calls
+            calls += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            if calls == 1:
+                raise media.YoutubeDLError("Sign in to confirm you're not a bot")
+            return {"id": "retried", "duration": 10}
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(media.time, "sleep", lambda seconds: None)
+    assert media.fetch_info("https://www.youtube.com/watch?v=retried")["id"] == "retried"
+    assert calls == 2
+
+
+def test_download_retries_bot_check_once(monkeypatch, tmp_path):
+    calls = 0
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            nonlocal calls
+            calls += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            if calls == 1:
+                raise media.YoutubeDLError("Sign in to confirm you're not a bot")
+            return {
+                "title": "retried",
+                "requested_downloads": [{"filepath": str(tmp_path / "clip.mp4")}],
+            }
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(media.time, "sleep", lambda seconds: None)
+    info, path = media._download_with_bot_retry(
+        "https://www.youtube.com/watch?v=download-retried",
+        {"outtmpl": str(tmp_path / "clip.%(ext)s")},
+    )
+    assert info["title"] == "retried"
+    assert path == tmp_path / "clip.mp4"
+    assert calls == 2
 
 
 def test_fetch_info_shares_in_flight_extraction(monkeypatch):

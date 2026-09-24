@@ -127,7 +127,10 @@ def test_info_reports_youtube_verification_errors(client, monkeypatch):
     )
     response = client.post("/api/info", json={"url": URL})
     assert response.status_code == 422
-    assert "verification" in response.json()["detail"].lower()
+    assert response.json()["detail"] == (
+        "YouTube requires verification for this video. "
+        "Try again later or upload the video instead."
+    )
 
 
 def test_info_diagnostic_log_does_not_include_raw_youtube_error(client, monkeypatch, caplog):
