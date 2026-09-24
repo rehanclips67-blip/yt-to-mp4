@@ -15,7 +15,6 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from starlette.background import BackgroundTask
-from yt_dlp import YoutubeDL
 from yt_dlp.utils import YoutubeDLError
 
 from .client_identity import client_identity
@@ -35,7 +34,6 @@ from .media import (
     Mode,
     PrimaryUrlError,
     _sanitize_log_message,
-    _youtube_options,
     _youtube_error_category,
     diagnose_youtube,
     download_clip,
@@ -60,7 +58,6 @@ from .schemas import (
     ExportRequest,
     InfoRequest,
     InfoResponse,
-    IsolatedYouTubeDiagnosticRequest,
     JobOut,
     QualityOut,
     SourceCompleteOut,
@@ -515,109 +512,6 @@ def youtube_diagnostic(
         return diagnose_youtube(req.url)
     except PrimaryUrlError as exc:
         raise HTTPException(422, str(exc)) from exc
-
-
-@app.post("/api/admin/isolated-youtube-diagnostic")
-def isolated_youtube_diagnostic(
-    req: IsolatedYouTubeDiagnosticRequest,
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
-) -> dict[str, object]:
-    expected = os.getenv("ADMIN_TOKEN", "").strip()
-    if not expected or x_admin_token is None or not secrets.compare_digest(x_admin_token, expected):
-        raise HTTPException(403, "Forbidden.")
-
-    allowed_ids = {"dQw4w9WgXcQ", "u2uLI2x405c"}
-    if req.video_id not in allowed_ids:
-        raise HTTPException(422, "That diagnostic video is not allowed.")
-
-    class _StageLogger:
-        def __init__(self) -> None:
-            self.player_response_received = False
-            self.playable_response = False
-            self.gvs_reached = False
-            self.bgutil_requested = False
-            self.playability_status: str | None = None
-
-        def debug(self, message: str) -> None:
-            self._record(message)
-
-        def warning(self, message: str) -> None:
-            self._record(message)
-
-        def error(self, message: str) -> None:
-            self._record(message)
-
-        def _record(self, message: str) -> None:
-            detail = str(message).lower()
-            marker = "player response playability status:"
-            if marker in detail:
-                self.player_response_received = True
-                self.playability_status = detail.split(marker, 1)[1].strip().split()[0]
-                self.playable_response = self.playability_status not in {
-                    "login_required",
-                    "bot_check",
-                    "age_check_required",
-                    "unplayable",
-                    "error",
-                }
-            if "generating a gvs po token" in detail:
-                self.gvs_reached = True
-                self.bgutil_requested = "bgutil" in detail
-
-    def _classification(error: Exception) -> str:
-        detail = str(error).lower()
-        if "sign in to confirm you're not a bot" in detail or "not a bot" in detail:
-            return "bot_check"
-        if "login_required" in detail or "sign in" in detail:
-            return "login_required"
-        if "region" in detail or "geo" in detail:
-            return "region_restricted"
-        if "private" in detail:
-            return "private"
-        if "age" in detail:
-            return "unavailable"
-        if "unavailable" in detail or "not available" in detail:
-            return "unavailable"
-        return "other"
-
-    logger = _StageLogger()
-    stages = {
-        "extractor_started": True,
-        "player_response_received": False,
-        "playable_response": False,
-        "playability_failure": False,
-        "gvs_reached": False,
-        "bgutil_requested": False,
-        "format_extraction_completed": False,
-    }
-    result: dict[str, object] = {
-        "video_id": req.video_id,
-        "client": "default",
-        "success": False,
-        "format_count": 0,
-        "classification": "other",
-        "stages": stages,
-    }
-    try:
-        options = _youtube_options({"skip_download": True})
-        options["logger"] = logger
-        with YoutubeDL(options) as ydl:
-            info = ydl.extract_info(
-                f"https://www.youtube.com/watch?v={req.video_id}",
-                download=False,
-            )
-        format_count = len(info.get("formats") or [])
-        stages["format_extraction_completed"] = True
-        result.update({"success": True, "format_count": format_count, "classification": "success"})
-    except YoutubeDLError as exc:
-        result["classification"] = _classification(exc)
-        stages["playability_failure"] = logger.player_response_received
-    finally:
-        stages["player_response_received"] = logger.player_response_received
-        stages["playable_response"] = logger.playable_response
-        stages["gvs_reached"] = logger.gvs_reached
-        stages["bgutil_requested"] = logger.bgutil_requested
-    return result
 
 
 @app.post("/api/transcript")
