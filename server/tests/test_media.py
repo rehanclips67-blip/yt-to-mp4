@@ -60,6 +60,7 @@ def test_sanitize_log_message_removes_url_credentials_and_paths():
 
 
 def test_fetch_info_retries_youtube_verification_with_fallback_client(monkeypatch):
+    media._clear_info_cache()
     calls = []
 
     class FakeYoutubeDL:
@@ -81,6 +82,147 @@ def test_fetch_info_retries_youtube_verification_with_fallback_client(monkeypatc
     assert fetch_info("https://www.youtube.com/watch?v=video")["id"] == "video"
     assert calls[1]["extractor_args"] == {"youtube": {"player_client": ["web_safari"]}}
     assert calls[0]["js_runtimes"] == {"node": {}}
+
+
+def test_fetch_info_does_not_fallback_on_rate_limit(monkeypatch):
+    media._clear_info_cache()
+    calls = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            calls.append(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            raise media.YoutubeDLError("HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    with pytest.raises(media.YoutubeDLError, match="429"):
+        media.fetch_info("https://www.youtube.com/watch?v=rate-limit")
+    assert len(calls) == 1
+
+
+def test_fetch_info_shares_in_flight_extraction(monkeypatch):
+    media._clear_info_cache()
+    calls = 0
+    lock = threading.Lock()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            nonlocal calls
+            with lock:
+                calls += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            time.sleep(0.05)
+            return {"id": "shared", "duration": 10}
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                media.fetch_info("https://youtu.be/shared?si=tracking")
+            )
+        )
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert calls == 1
+    assert [result["id"] for result in results] == ["shared", "shared"]
+
+
+def test_fetch_info_reuses_successful_metadata_within_ttl(monkeypatch):
+    media._clear_info_cache()
+    calls = 0
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            nonlocal calls
+            calls += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            return {"id": "cached", "duration": 10}
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    assert media.fetch_info("https://www.youtube.com/watch?v=cached")["id"] == "cached"
+    assert media.fetch_info("https://youtu.be/cached")["id"] == "cached"
+    assert calls == 1
+
+
+def test_fetch_info_does_not_retain_failed_metadata(monkeypatch):
+    media._clear_info_cache()
+    calls = 0
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            nonlocal calls
+            calls += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            raise media.YoutubeDLError("temporary extraction failure")
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    for _ in range(2):
+        with pytest.raises(media.YoutubeDLError):
+            media.fetch_info("https://www.youtube.com/watch?v=failed")
+    assert calls == 2
+    assert not media._info_cache
+
+
+def test_fetch_info_cache_is_bounded_and_separates_urls(monkeypatch):
+    media._clear_info_cache()
+    monkeypatch.setattr(media, "_INFO_CACHE_MAX_ENTRIES", 2)
+    calls = 0
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            nonlocal calls
+            calls += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            return {"id": url.rsplit("=", 1)[-1], "duration": 10}
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    media.fetch_info("https://www.youtube.com/watch?v=one")
+    media.fetch_info("https://www.youtube.com/watch?v=two")
+    media.fetch_info("https://www.youtube.com/watch?v=three")
+    assert len(media._info_cache) <= 2
+    assert media.fetch_info("https://www.youtube.com/watch?v=two")["id"] == "two"
+    assert media.fetch_info("https://www.youtube.com/watch?v=different")["id"] == "different"
+    assert calls == 4
 
 
 def test_download_clip_reports_byte_progress(monkeypatch, tmp_path):

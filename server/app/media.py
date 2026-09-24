@@ -12,6 +12,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -21,7 +22,7 @@ from enum import StrEnum
 from pathlib import Path
 from shutil import which
 from typing import NamedTuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from yt_dlp import YoutubeDL
@@ -107,6 +108,71 @@ _source_writer: ContextVar[tuple[Callable[[Source], None], int] | None] = Contex
 )
 log = logging.getLogger("clipper.media")
 ProgressCallback = Callable[[str, int | None], None]
+_INFO_CACHE_TTL_SECONDS = 10.0
+_INFO_CACHE_MAX_ENTRIES = 128
+_info_cache_lock = threading.Lock()
+_info_cache: dict[str, "_InfoCacheEntry"] = {}
+
+
+class _InfoCacheEntry:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: dict | None = None
+        self.error: Exception | None = None
+        self.expires_at = 0.0
+        self.in_flight = True
+
+
+def _normalized_info_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+        return f"https://www.youtube.com/watch?{urlencode({'v': video_id})}"
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        video_id = parse_qs(parsed.query).get("v", [None])[0]
+        if video_id:
+            return f"https://www.youtube.com/watch?{urlencode({'v': video_id})}"
+    return urlunparse((parsed.scheme.lower(), host, parsed.path, "", parsed.query, ""))
+
+
+def _clear_info_cache() -> None:
+    with _info_cache_lock:
+        _info_cache.clear()
+
+
+def _evict_info_cache_entries(now: float) -> None:
+    for key, entry in list(_info_cache.items()):
+        if not entry.in_flight and entry.expires_at <= now:
+            del _info_cache[key]
+    while len(_info_cache) >= _INFO_CACHE_MAX_ENTRIES:
+        completed = [
+            (entry.expires_at, key)
+            for key, entry in _info_cache.items()
+            if not entry.in_flight
+        ]
+        if not completed:
+            return
+        _, key = min(completed)
+        del _info_cache[key]
+
+
+def _begin_info_extraction(key: str) -> tuple[_InfoCacheEntry | None, bool]:
+    now = time.monotonic()
+    with _info_cache_lock:
+        entry = _info_cache.get(key)
+        if entry is not None:
+            if entry.in_flight:
+                return entry, False
+            if entry.expires_at > now and entry.result is not None:
+                return entry, False
+            del _info_cache[key]
+        _evict_info_cache_entries(now)
+        if len(_info_cache) >= _INFO_CACHE_MAX_ENTRIES:
+            return None, True
+        entry = _InfoCacheEntry()
+        _info_cache[key] = entry
+        return entry, True
 
 
 def _package_version(name: str) -> str | None:
@@ -211,11 +277,7 @@ def _verification_fallback_clients() -> tuple[str, ...]:
 
 def _is_youtube_verification_error(error: Exception) -> bool:
     detail = str(error).lower()
-    return (
-        "sign in to confirm" in detail
-        or "not a bot" in detail
-        or "http error 429" in detail
-    )
+    return "sign in to confirm" in detail or "not a bot" in detail
 
 
 class _DiagnosticLogger:
@@ -422,6 +484,35 @@ def _timeout_hook(deadline: float, budget: float):
 def fetch_info(url: str) -> dict:
     """Read metadata and the available formats without downloading anything."""
     validate_primary_url(url)
+    key = _normalized_info_url(url)
+    entry, owner = _begin_info_extraction(key)
+    if entry is not None and not owner:
+        entry.event.wait()
+        if entry.result is not None:
+            return entry.result
+        if entry.error is not None:
+            raise entry.error
+        raise RuntimeError("Metadata extraction ended without a result.")
+    try:
+        result = _fetch_info_uncached(url)
+    except Exception as error:
+        if entry is not None:
+            with _info_cache_lock:
+                entry.error = error
+                entry.in_flight = False
+                _info_cache.pop(key, None)
+                entry.event.set()
+        raise
+    if entry is not None:
+        with _info_cache_lock:
+            entry.result = result
+            entry.expires_at = time.monotonic() + _INFO_CACHE_TTL_SECONDS
+            entry.in_flight = False
+            entry.event.set()
+    return result
+
+
+def _fetch_info_uncached(url: str) -> dict:
     options = _youtube_options({"skip_download": True})
     try:
         with YoutubeDL(options) as ydl:
