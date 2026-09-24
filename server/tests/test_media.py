@@ -49,6 +49,60 @@ def test_youtube_error_categories(message, expected):
     assert media._youtube_error_category(Exception(message)) == expected
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("LOGIN_REQUIRED", False),
+        ("Sign in to confirm you're not a bot", False),
+        ("Video unavailable in your region", False),
+        ("HTTP Error 429: Too Many Requests", True),
+        ("connection reset by peer", True),
+    ],
+)
+def test_youtube_error_retryability(message, expected):
+    assert media._youtube_error_retryable(Exception(message)) is expected
+
+
+def test_metadata_and_download_share_base_youtube_policy(monkeypatch):
+    monkeypatch.delenv("YOUTUBE_COOKIES_FILE", raising=False)
+    monkeypatch.delenv("YOUTUBE_POT_PROVIDER_URL", raising=False)
+    metadata_options = media._youtube_options({"skip_download": True})
+    download_options = media._youtube_options({"socket_timeout": 30})
+
+    for key in ("quiet", "no_warnings", "noplaylist", "js_runtimes"):
+        assert metadata_options[key] == download_options[key]
+    assert "extractor_args" not in metadata_options
+    assert "extractor_args" not in download_options
+
+
+def test_metadata_attempt_logs_sanitized_policy_fields(monkeypatch, caplog):
+    media._clear_info_cache()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            raise media.YoutubeDLError("Sign in to confirm you're not a bot")
+
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
+    with caplog.at_level("WARNING", logger="clipper.media"), pytest.raises(media.YoutubeDLError):
+        media.fetch_info("https://www.youtube.com/watch?v=structured")
+
+    assert "attempt=default" in caplog.text
+    assert "client=default" in caplog.text
+    assert "stage=metadata" in caplog.text
+    assert "error_class=bot_check" in caplog.text
+    assert "retryable=False" in caplog.text
+    assert "LOGIN_REQUIRED" not in caplog.text
+
+
 def test_sanitize_log_message_removes_url_credentials_and_paths():
     message = media._sanitize_log_message(
         "https://example.test/video?token=secret C:\\private\\cookie.txt "

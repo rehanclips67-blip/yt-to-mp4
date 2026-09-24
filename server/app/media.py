@@ -323,6 +323,7 @@ def _youtube_error_category(error: Exception) -> str:
         or "confirm your age" in detail
         or "private video" in detail
         or "sign in" in detail
+        or "login_required" in detail
     ):
         return "age_or_login"
     if (
@@ -340,6 +341,28 @@ def _youtube_error_category(error: Exception) -> str:
     ):
         return "network"
     return "other"
+
+
+def _youtube_error_retryable(error: Exception) -> bool:
+    """Return whether a bounded retry can plausibly change the outcome."""
+    return _youtube_error_category(error) == "network"
+
+
+def _log_youtube_attempt(
+    *,
+    attempt: str,
+    client: str,
+    stage: str,
+    error: Exception,
+) -> None:
+    log.warning(
+        "YouTube extraction attempt=%s client=%s stage=%s error_class=%s retryable=%s",
+        attempt,
+        client,
+        stage,
+        _youtube_error_category(error),
+        _youtube_error_retryable(error),
+    )
 
 
 def _youtube_options(extra: dict | None = None, *, player_client: str | None = None) -> dict:
@@ -613,9 +636,11 @@ def _fetch_info_uncached(url: str) -> dict:
     except YoutubeDLError as error:
         if not _is_youtube_verification_error(error):
             raise
-        log.warning(
-            "YouTube extraction failed with category=%s; trying fallback clients",
-            _youtube_error_category(error),
+        _log_youtube_attempt(
+            attempt="default",
+            client="default",
+            stage="metadata",
+            error=error,
         )
         for player_client in _verification_fallback_clients():
             try:
@@ -624,10 +649,11 @@ def _fetch_info_uncached(url: str) -> dict:
                 ) as ydl:
                     return ydl.extract_info(url, download=False)
             except YoutubeDLError as fallback_error:
-                log.warning(
-                    "YouTube fallback client=%s failed with category=%s",
-                    player_client,
-                    _youtube_error_category(fallback_error),
+                _log_youtube_attempt(
+                    attempt=f"fallback_{player_client}",
+                    client=player_client,
+                    stage="metadata",
+                    error=fallback_error,
                 )
         raise
 

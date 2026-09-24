@@ -27,6 +27,7 @@ from .media import (
     Mode,
     _sanitize_log_message,
     _youtube_error_category,
+    _youtube_error_retryable,
     make_clip_spec,
     source_context,
 )
@@ -759,22 +760,31 @@ class JobManager:
                 break
             except Exception as e:
                 attempts += 1
-                transient = isinstance(e, YoutubeDLError)
+                transient = isinstance(e, YoutubeDLError) and _youtube_error_retryable(e)
                 if transient and attempts < self.max_attempts and job.id not in self._cancelled:
                     time.sleep(self.retry_backoff * (2 ** (attempts - 1)))
                     continue
                 if transient:
                     log.warning(
-                        "clip failed class=%s message=%s",
+                        "clip extraction attempt=%s stage=download error_class=%s retryable=%s",
+                        attempts,
                         _youtube_error_category(e),
-                        _sanitize_log_message(e),
+                        True,
+                    )
+                    job.error = "Couldn't download that clip. Try another quality."
+                elif isinstance(e, YoutubeDLError):
+                    log.warning(
+                        "clip extraction attempt=%s stage=download error_class=%s retryable=%s",
+                        attempts,
+                        _youtube_error_category(e),
+                        False,
                     )
                     job.error = "Couldn't download that clip. Try another quality."
                 else:
                     log.error(
-                        "unexpected failure class=%s message=%s",
+                        "unexpected failure stage=download error_class=%s retryable=%s",
                         _youtube_error_category(e),
-                        _sanitize_log_message(e),
+                        False,
                     )
                     job.error = "Something went wrong on our side."
                 shutil.rmtree(job.work_dir, ignore_errors=True)

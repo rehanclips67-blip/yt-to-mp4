@@ -7,9 +7,10 @@ import pytest
 from app.db import create_db_and_tables, make_engine
 from app.formats import Quality
 from app.jobs import JobManager, JobStatus, QueueFull, TooManyJobs
-from app.media import Clip, Mode, make_clip_spec
+from app.media import Clip, Mode, YoutubeDLError, make_clip_spec
 from app.models import JobRecord
 from app.repository import JobRepository
+from app.resources import ResourceGuard
 
 SPEC = make_clip_spec(
     url="https://youtu.be/x",
@@ -201,6 +202,69 @@ def test_timeout_failure_is_clean_and_does_not_retry(tmp_path):
     wait_for(job, JobStatus.FAILED)
     assert "timed out" in job.error
     assert not job.work_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_calls", "retryable"),
+    [
+        (YoutubeDLError("LOGIN_REQUIRED"), 1, False),
+        (YoutubeDLError("Sign in to confirm you're not a bot"), 1, False),
+        (YoutubeDLError("Connection reset by peer"), 3, True),
+    ],
+)
+def test_youtube_retry_policy_separates_deterministic_and_transient(
+    tmp_path, monkeypatch, error, expected_calls, retryable
+):
+    monkeypatch.setattr(
+        "app.resources.shutil.disk_usage",
+        lambda _root: type("Usage", (), {"free": 2**40})(),
+    )
+    calls = 0
+
+    def runner(spec, out_dir):
+        nonlocal calls
+        calls += 1
+        raise error
+
+    manager = JobManager(
+        runner,
+        max_attempts=3,
+        retry_backoff=0,
+        estimated_bytes=1,
+        memory_mb=0,
+        resources=ResourceGuard(min_free_bytes=0, temp_budget_bytes=1024),
+        root=tmp_path / "jobs",
+    )
+    job = manager.submit(SPEC, "a")
+    wait_for(job, JobStatus.FAILED)
+
+    assert calls == expected_calls
+    assert retryable is (expected_calls == 3)
+    assert not job.work_dir.exists()
+
+
+def test_non_retryable_youtube_failure_log_is_structured(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(
+        "app.resources.shutil.disk_usage",
+        lambda _root: type("Usage", (), {"free": 2**40})(),
+    )
+    def runner(spec, out_dir):
+        raise YoutubeDLError("LOGIN_REQUIRED")
+
+    manager = JobManager(
+        runner,
+        estimated_bytes=1,
+        memory_mb=0,
+        resources=ResourceGuard(min_free_bytes=0, temp_budget_bytes=1024),
+        root=tmp_path / "jobs",
+    )
+    with caplog.at_level("WARNING", logger="clipper.jobs"):
+        job = manager.submit(SPEC, "a")
+        wait_for(job, JobStatus.FAILED)
+
+    assert "stage=download" in caplog.text
+    assert "error_class=age_or_login" in caplog.text
+    assert "retryable=False" in caplog.text
 
 
 def test_active_download_reference_blocks_ttl_cleanup(tmp_path):
