@@ -60,6 +60,44 @@ copy `.env.example` to `.env.local` and edit `NEXT_PUBLIC_API_URL`.
 
 Checks: `npm run typecheck` (run `npm run dev` once first so Next generates its type file) and `npm run build`.
 
+### Deploy the backend on Render
+
+The backend can run as a Render **Web Service** using the repository root
+`Dockerfile`. Configure the service with:
+
+- **Branch:** `main`
+- **Runtime:** `Docker`
+- **Dockerfile path:** `Dockerfile`
+- **Docker build context:** repository root
+- **Start command:** leave blank so the Dockerfile `CMD` runs
+- **Health check path:** optional; `/docs` is available if a health check is required
+
+The image preserves the production runtime: Python 3.11, Node 22, FFmpeg,
+`yt-dlp==2026.8.19`, and `yt-dlp-ejs==0.8.0`. The container startup command
+uses Render's `PORT` and binds Uvicorn to `0.0.0.0`; do not hardcode a port in
+Render settings.
+
+Set these environment variables in Render as needed:
+
+- `ALLOWED_ORIGINS` — required for the deployed frontend origin (comma-separated
+  origins; the local default is not suitable for a deployed frontend).
+- `DATABASE_URL` — optional for the canary; the default SQLite database is
+  local to the service and ephemeral on restarts/redeploys.
+- `YOUTUBE_POT_PROVIDER_URL` — optional. Leave unset unless you operate a
+  reachable, authorized BgUtils provider. Never copy a Railway-private hostname
+  to Render.
+- `ADMIN_TOKEN` — optional; set only if the restricted admin diagnostic endpoint
+  is intentionally enabled.
+
+All other configuration variables use the defaults documented in the
+configuration table below. Storage, Redis/RQ, S3/MinIO, and Whisper variables
+are optional features and should be configured only with their corresponding
+provider credentials. Do not commit secrets or create a `.env` file in the
+repository.
+
+This Render service is suitable as a Host B canary. It does not migrate
+production routing, storage, the database, or the Railway service.
+
 ## API
 
 `POST /api/info` `{ "url" }` returns title, duration, thumbnail and `qualities`, capped at the video's real maximum (4K).
