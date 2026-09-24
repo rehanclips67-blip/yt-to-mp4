@@ -386,98 +386,27 @@ class _DiagnosticLogger:
         self.messages.append(_sanitize_log_message(message))
 
 
-def _diagnostic_reason_classification(messages: list[str], status: str | None) -> str:
-    detail = " ".join(messages).lower()
-    if "sign in to confirm" in detail or "not a bot" in detail:
-        return "bot_check"
-    if status == "LOGIN_REQUIRED" or "login required" in detail:
-        return "login_required"
-    if "age-restricted" in detail or "confirm your age" in detail or "age verification" in detail:
-        return "age_restricted"
-    if "private video" in detail or "private" in detail:
-        return "private"
-    if "region" in detail or "geo" in detail or "country" in detail:
-        return "region_restricted"
-    if "video unavailable" in detail or "not available" in detail or "unavailable" in detail:
-        return "unavailable"
-    return "other"
-
-
-def _diagnostic_client_result(
-    client: str,
-    logger: _DiagnosticLogger,
-    *,
-    error_class: str | None,
-    format_count: int | None,
-) -> dict[str, object]:
-    status_matches = [
-        re.search(r"player response playability status: ([A-Z_]+)", message)
-        for message in logger.messages
-    ]
-    status = next((match.group(1) for match in status_matches if match), None)
-    gvs_reached = any(
-        "Generating a " in message and "PO Token" in message for message in logger.messages
-    )
-    bgutil_requested = any(
-        "Generating a gvs PO Token for web client via bgutil HTTP server" in message
-        for message in logger.messages
-    )
-    return {
-        "client": client,
-        "player_api_response_received": any(
-            "Downloading " in message and "player API JSON" in message for message in logger.messages
-        ),
-        "playability_status": status,
-        "reason_classification": _diagnostic_reason_classification(logger.messages, status),
-        "format_extraction_reached": format_count is not None,
-        "format_count": format_count,
-        "gvs_reached": gvs_reached,
-        "bgutil_get_pot_requested": bgutil_requested,
-        "final_result": "success" if error_class is None else error_class,
-    }
-
-
-def _run_diagnostic_attempt(url: str, client: str) -> tuple[dict[str, object], bool]:
+def diagnose_youtube(url: str) -> dict[str, object]:
+    validate_primary_url(url)
     logger = _DiagnosticLogger()
-    options = _youtube_options(
-        {"skip_download": True, "verbose": True, "logger": logger},
-        player_client=None if client == "default" else client,
-    )
-    error_class = None
-    format_count = None
+    options = _youtube_options({"skip_download": True, "verbose": True, "logger": logger})
+    player_client = (options.get("extractor_args") or {}).get("youtube", {}).get(
+        "player_client", ["default"]
+    )[0]
+    result: dict[str, object] = {
+        "error_class": None,
+        "player_client": player_client,
+        "environment": youtube_environment_diagnostics(),
+        "messages": [],
+    }
     try:
         with YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
-        format_count = len(info.get("formats") or [])
+        result["format_count"] = len(info.get("formats") or [])
     except YoutubeDLError as error:
-        error_class = _youtube_error_category(error)
+        result["error_class"] = _youtube_error_category(error)
         logger.error(error)
-    return _diagnostic_client_result(client, logger, error_class=error_class, format_count=format_count), (
-        error_class == "bot_check"
-    )
-
-
-def diagnose_youtube(url: str) -> dict[str, object]:
-    validate_primary_url(url)
-    attempts = []
-    first_attempt, should_try_fallbacks = _run_diagnostic_attempt(url, "default")
-    attempts.append(first_attempt)
-    if should_try_fallbacks:
-        for player_client in _verification_fallback_clients():
-            fallback_attempt, _ = _run_diagnostic_attempt(url, player_client)
-            attempts.append(fallback_attempt)
-    result: dict[str, object] = {
-        "error_class": next(
-            (attempt["final_result"] for attempt in attempts if attempt["final_result"] != "success"),
-            None,
-        ),
-        "player_client": "default",
-        "environment": youtube_environment_diagnostics(),
-        "client_results": attempts,
-    }
-    first_success = next((attempt for attempt in attempts if attempt["final_result"] == "success"), None)
-    if first_success is not None:
-        result["format_count"] = first_success["format_count"]
+    result["messages"] = [message for message in logger.messages if message][:40]
     return result
 
 
