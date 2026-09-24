@@ -33,6 +33,10 @@ class InfoRequest(BaseModel):
     url: YouTubeUrl
 
 
+class IsolatedYouTubeDiagnosticRequest(BaseModel):
+    video_id: str
+
+
 class TranscriptRequest(InfoRequest):
     fallback_whisper: bool = False
 
