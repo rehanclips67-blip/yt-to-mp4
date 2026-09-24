@@ -167,6 +167,27 @@ Behind a reverse proxy, make sure the real client IP reaches the app (the per-us
 | `WHISPER_MIN_AVAILABLE_MEMORY_MB` | `512` | Soft available-memory floor before model load |
 | `WHISPER_MAX_SECONDS` | `600` | Maximum source duration |
 | `CLOUDFLARE_TRUSTED_CIDRS` | built-in Cloudflare IPv4/IPv6 ranges | Optional comma-separated CIDR override for trusted Cloudflare peers |
+| `YOUTUBE_POT_PROVIDER_URL` | unset | Private HTTP BgUtils provider base URL; when unset, PO-token integration is disabled |
+
+### Optional BgUtils PO-token provider
+
+The server includes the pinned `bgutil-ytdlp-pot-provider==2.0.0` yt-dlp plugin. When
+`YOUTUBE_POT_PROVIDER_URL` is set, the shared yt-dlp configuration adds the documented
+`youtubepot-bgutilhttp:base_url` extractor argument. If it is unset or unavailable, Clipper
+continues using its normal yt-dlp configuration and existing `web_safari`/`android_vr`
+verification fallback.
+
+Run the provider as a separate private Railway service using the official
+`brainicism/bgutil-ytdlp-pot-provider:2.0.0` image. Do not create a public port mapping.
+Configure the provider to listen on its Railway private interface/port as required by the
+service platform, then set `YOUTUBE_POT_PROVIDER_URL` on the Clipper service to the provider's
+Railway private service URL, including `http://` and port `4416` when applicable. The exact
+private hostname is assigned by Railway and must not be guessed or committed here.
+
+At startup Clipper performs one short TCP availability check and logs only disabled,
+available/unavailable status and latency. It never logs PO tokens, cookies, signed URLs, or
+the configured provider URL. PO tokens may help with some YouTube verification or 403 cases,
+but they do not guarantee that bot checks will be removed.
 
 ## Tests and lint
 

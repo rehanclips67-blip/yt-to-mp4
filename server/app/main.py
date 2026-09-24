@@ -46,6 +46,7 @@ from .media import (
     validate_primary_url,
     whisper_is_configured,
     youtube_environment_diagnostics,
+    youtube_pot_provider_diagnostics,
 )
 from .models import Source, SourceType
 from .rate_limit import RateLimitDecision, make_rate_limiter
@@ -125,6 +126,21 @@ log.info(
     _youtube_diag["yt_dlp_ejs_version"],
     (_youtube_diag["js_runtimes"] or {}).get("node"),
 )
+_youtube_pot_diag = youtube_pot_provider_diagnostics()
+if not _youtube_pot_diag["configured"]:
+    log.warning("YouTube PO-token provider disabled")
+elif _youtube_pot_diag["available"]:
+    log.info(
+        "YouTube PO-token provider status=%s latency_ms=%s",
+        _youtube_pot_diag["status"],
+        _youtube_pot_diag["latency_ms"],
+    )
+else:
+    log.warning(
+        "YouTube PO-token provider status=%s latency_ms=%s",
+        _youtube_pot_diag["status"],
+        _youtube_pot_diag.get("latency_ms"),
+    )
 
 
 def _youtube_info_error(error: YoutubeDLError) -> str:

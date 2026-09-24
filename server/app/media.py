@@ -268,6 +268,36 @@ def youtube_environment_diagnostics() -> dict[str, object]:
     }
 
 
+def youtube_pot_provider_diagnostics() -> dict[str, object]:
+    provider_url = os.getenv("YOUTUBE_POT_PROVIDER_URL", "").strip()
+    if not provider_url:
+        return {"configured": False, "available": False, "status": "disabled"}
+    parsed = urlparse(provider_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"configured": True, "available": False, "status": "invalid_configuration"}
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return {"configured": True, "available": False, "status": "invalid_configuration"}
+    started = time.monotonic()
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=2):
+            pass
+    except OSError:
+        return {
+            "configured": True,
+            "available": False,
+            "status": "unavailable",
+            "latency_ms": round((time.monotonic() - started) * 1000),
+        }
+    return {
+        "configured": True,
+        "available": True,
+        "status": "available",
+        "latency_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
 def _sanitize_log_message(value: object) -> str:
     message = re.sub(r"(?i)\b(?:https?|ftp)://\S+", "[url]", str(value))
     message = re.sub(r"(?i)\b(?:bearer|basic)\s+\S+", "[credential]", message)
@@ -315,11 +345,20 @@ def _youtube_error_category(error: Exception) -> str:
 def _youtube_options(extra: dict | None = None, *, player_client: str | None = None) -> dict:
     options = {**_BASE_OPTS, **(extra or {})}
     options["js_runtimes"] = {"node": {}}
+    extractor_args = dict(options.get("extractor_args") or {})
+    youtube_args = dict(extractor_args.get("youtube") or {})
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
     if cookies_file:
         options["cookiefile"] = cookies_file
     if player_client:
-        options["extractor_args"] = {"youtube": {"player_client": [player_client]}}
+        youtube_args["player_client"] = [player_client]
+    provider_url = os.getenv("YOUTUBE_POT_PROVIDER_URL", "").strip()
+    if provider_url:
+        extractor_args["youtubepot-bgutilhttp"] = {"base_url": [provider_url]}
+    if youtube_args:
+        extractor_args["youtube"] = youtube_args
+    if extractor_args:
+        options["extractor_args"] = extractor_args
     return options
 
 

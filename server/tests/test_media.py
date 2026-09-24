@@ -343,6 +343,58 @@ def test_youtube_environment_diagnostics_excludes_runtime_paths(monkeypatch):
     }
 
 
+def test_youtube_pot_provider_is_disabled_without_url(monkeypatch):
+    monkeypatch.delenv("YOUTUBE_POT_PROVIDER_URL", raising=False)
+    options = media._youtube_options()
+    assert "extractor_args" not in options
+    assert media.youtube_pot_provider_diagnostics() == {
+        "configured": False,
+        "available": False,
+        "status": "disabled",
+    }
+
+
+def test_youtube_pot_provider_options_merge_with_fallback_client(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_POT_PROVIDER_URL", "http://bgutil.internal:4416/")
+    options = media._youtube_options(player_client="web_safari")
+    assert options["extractor_args"] == {
+        "youtube": {"player_client": ["web_safari"]},
+        "youtubepot-bgutilhttp": {"base_url": ["http://bgutil.internal:4416/"]},
+    }
+
+
+def test_youtube_pot_provider_diagnostics_are_nonfatal(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_POT_PROVIDER_URL", "http://bgutil.internal:4416")
+
+    def unavailable(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(media.socket, "create_connection", unavailable)
+    diagnostics = media.youtube_pot_provider_diagnostics()
+    assert diagnostics["configured"] is True
+    assert diagnostics["available"] is False
+    assert diagnostics["status"] == "unavailable"
+    assert "bgutil.internal" not in str(diagnostics)
+
+
+def test_youtube_pot_provider_diagnostics_reports_reachable(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_POT_PROVIDER_URL", "http://bgutil.internal:4416")
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(media.socket, "create_connection", lambda *args, **kwargs: FakeConnection())
+    diagnostics = media.youtube_pot_provider_diagnostics()
+    assert diagnostics["configured"] is True
+    assert diagnostics["available"] is True
+    assert diagnostics["status"] == "available"
+    assert "latency_ms" in diagnostics
+
+
 @pytest.fixture(scope="module")
 def video_url(tmp_path_factory):
     root = tmp_path_factory.mktemp("site")
