@@ -569,7 +569,8 @@ def fetch_info(url: str) -> dict:
 def _fetch_info_uncached(url: str) -> dict:
     options = _youtube_options({"skip_download": True})
     try:
-        return _extract_with_bot_retry(url, options)
+        with YoutubeDL(options) as ydl:
+            return ydl.extract_info(url, download=False)
     except YoutubeDLError as error:
         if not _is_youtube_verification_error(error):
             raise
@@ -590,33 +591,6 @@ def _fetch_info_uncached(url: str) -> dict:
                     _youtube_error_category(fallback_error),
                 )
         raise
-
-
-def _extract_with_bot_retry(url: str, options: dict) -> dict:
-    for attempt in range(2):
-        try:
-            with YoutubeDL(options) as ydl:
-                return ydl.extract_info(url, download=False)
-        except YoutubeDLError as error:
-            if attempt == 1 or not _is_youtube_verification_error(error):
-                raise
-            time.sleep(2.5)
-    raise RuntimeError("Metadata extraction ended without a result.")
-
-
-def _download_with_bot_retry(url: str, options: dict) -> tuple[dict, Path]:
-    for attempt in range(2):
-        try:
-            with YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=True)
-                requested = info.get("requested_downloads") or []
-                path = requested[0].get("filepath") if requested else None
-                return info, Path(path) if path else Path(ydl.prepare_filename(info))
-        except YoutubeDLError as error:
-            if attempt == 1 or not _is_youtube_verification_error(error):
-                raise
-            time.sleep(2.5)
-    raise RuntimeError("Download ended without a result.")
 
 
 def fetch_transcript(url: str) -> list[dict] | None:
@@ -896,7 +870,8 @@ def download_clip(
             "ffmpeg_o": _EXACT_ENCODE_ARGS,
         }
 
-    info, _prepared = _download_with_bot_retry(spec.url, opts)
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(spec.url, download=True)
     path = Path(info["requested_downloads"][0]["filepath"])
     _create_source(info, path, spec.url)
     return Clip(path, info["title"])
@@ -943,7 +918,13 @@ def download_export(
         "outtmpl": str(source_dir / "source.%(ext)s"),
         "max_filesize": _max_download_bytes(),
     })
-    info, source = _download_with_bot_retry(first.url, opts)
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(first.url, download=True)
+        source = Path(ydl.prepare_filename(info))
+        if source.suffix != ".mp4":
+            candidate = source.with_suffix(".mp4")
+            if candidate.exists():
+                source = candidate
     if source.suffix != ".mp4":
         candidate = source.with_suffix(".mp4")
         if candidate.exists():
