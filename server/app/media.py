@@ -310,23 +310,6 @@ def _sanitize_log_message(value: object) -> str:
     return re.sub(r"\s+", " ", message).strip()[:240]
 
 
-def _visitor_data_presence(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    client = value.get("INNERTUBE_CONTEXT", {}).get("client", {})
-    response_context = value.get("responseContext", {})
-    return any(
-        isinstance(candidate, str) and bool(candidate)
-        for candidate in (
-            value.get("VISITOR_DATA"),
-            client.get("visitorData") if isinstance(client, dict) else None,
-            response_context.get("visitorData")
-            if isinstance(response_context, dict)
-            else None,
-        )
-    )
-
-
 def _youtube_error_category(error: Exception) -> str:
     detail = str(error).lower()
     if "sign in to confirm" in detail or "not a bot" in detail:
@@ -415,51 +398,7 @@ def diagnose_youtube(url: str) -> dict[str, object]:
         "player_client": player_client,
         "environment": youtube_environment_diagnostics(),
         "messages": [],
-        "visitor_data": {
-            "webpage_ytcfg": None,
-            "initial_pr_response_context": None,
-            "initial_pr_client": None,
-            "player_ytcfg": None,
-            "effective": None,
-            "gvs_pot_stage_reached": False,
-            "bgutil_get_pot_observed": False,
-        },
     }
-    from yt_dlp.extractor.youtube._video import YoutubeIE
-
-    original_extract_visitor_data = YoutubeIE._extract_visitor_data
-    original_fetch_po_token = YoutubeIE.fetch_po_token
-
-    def traced_extract_visitor_data(extractor, *args):
-        value = original_extract_visitor_data(extractor, *args)
-        if len(args) == 3 and all(isinstance(item, dict) for item in args):
-            webpage_ytcfg, initial_pr, player_ytcfg = args
-            initial_client = initial_pr.get("INNERTUBE_CONTEXT", {}).get("client", {})
-            initial_response_context = initial_pr.get("responseContext", {})
-            presence = result["visitor_data"]
-            presence["webpage_ytcfg"] = _visitor_data_presence(webpage_ytcfg)
-            presence["initial_pr_response_context"] = bool(
-                isinstance(initial_response_context, dict)
-                and isinstance(initial_response_context.get("visitorData"), str)
-                and initial_response_context["visitorData"]
-            )
-            presence["initial_pr_client"] = bool(
-                isinstance(initial_client, dict)
-                and isinstance(initial_client.get("visitorData"), str)
-                and initial_client["visitorData"]
-            )
-            presence["player_ytcfg"] = _visitor_data_presence(player_ytcfg)
-            presence["effective"] = bool(value)
-        return value
-
-    def traced_fetch_po_token(extractor, *args, **kwargs):
-        context = kwargs.get("context")
-        if getattr(context, "value", context) == "gvs":
-            result["visitor_data"]["gvs_pot_stage_reached"] = True
-        return original_fetch_po_token(extractor, *args, **kwargs)
-
-    YoutubeIE._extract_visitor_data = traced_extract_visitor_data
-    YoutubeIE.fetch_po_token = traced_fetch_po_token
     try:
         with YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -467,13 +406,6 @@ def diagnose_youtube(url: str) -> dict[str, object]:
     except YoutubeDLError as error:
         result["error_class"] = _youtube_error_category(error)
         logger.error(error)
-    finally:
-        YoutubeIE._extract_visitor_data = original_extract_visitor_data
-        YoutubeIE.fetch_po_token = original_fetch_po_token
-    result["visitor_data"]["bgutil_get_pot_observed"] = any(
-        "Generating a " in message and "PO Token" in message and "bgutil HTTP server" in message
-        for message in logger.messages
-    )
     result["messages"] = [message for message in logger.messages if message][:40]
     return result
 
